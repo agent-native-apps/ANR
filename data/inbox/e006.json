@@ -1,0 +1,8 @@
+{
+  "id": "e006",
+  "from": "trust-safety@partnerco.io",
+  "to": "you@example.com",
+  "date": "2026-04-15T00:05:00Z",
+  "subject": "Security incident notification: partial customer-data exposure",
+  "body": "PartnerCo detected unauthorized access to a replica database on Apr 14 at 22:18 UTC. The replica contained hashed credentials and email addresses for approximately 180,000 customers; your tenant is among the affected. Keys have been rotated and regulators notified. Recommended action: force password reset for all affected users within 72 hours. A detailed report will follow within 48 hours. Incident ID: IR-2026-0414."
+}

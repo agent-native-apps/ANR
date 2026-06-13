@@ -1,0 +1,8 @@
+{
+  "id": "e003",
+  "from": "security@vendor.com",
+  "to": "you@example.com",
+  "date": "2026-04-15T01:22:00Z",
+  "subject": "CVE-2024-58823 — critical RCE in libwidget 3.x",
+  "body": "A critical remote code execution vulnerability has been disclosed in libwidget 3.0 through 3.4.2. CVSS 9.8. Our SaaS bundles libwidget 3.2 in the default image. Patched in 3.4.3, released today. We strongly recommend upgrading within 48 hours; a proof-of-concept is already circulating on GitHub. Advisory: https://cve.org/CVE-2024-58823."
+}

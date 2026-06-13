@@ -1,0 +1,2409 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>anr-viz — {{ app_name }} v{{ app_version }}</title>
+  <link rel="stylesheet" href="/static/style.css"/>
+  <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="top__title">
+      <strong>{{ app_name }}</strong>
+      <span class="top__version">v{{ app_version }}</span>
+    </div>
+    <div id="totals" class="totals totals--top"></div>
+    <div class="top__sub">agent-native runtime · live view</div>
+  </header>
+
+  <main class="layout">
+    <section class="stage">
+      <!-- HITL banner: shown when one or more pending HITL requests
+           exist. Click "review" to open the decision modal. -->
+      <div id="hitl-banner" class="hitl-banner" hidden>
+        <span class="hitl-banner__icon" aria-hidden="true">⚠</span>
+        <span class="hitl-banner__text" id="hitl-banner-text"></span>
+        <button class="hitl-banner__btn" id="hitl-banner-review">review →</button>
+      </div>
+
+      <!-- TRACE PANEL — primary live view. Indented rows, ordered by
+           timestamp, depth = delegation_depth. Each row is a click
+           target that fires `trace-row-selected` to drive the topology
+           highlighter. See trace.py for the data shape. -->
+      <div class="trace" aria-label="execution trace">
+        <div class="trace__head">
+          <h2 class="trace__title">trace</h2>
+          <label class="trace__toggle" title="show LLM round-trips between actions">
+            <input type="checkbox" id="trace-show-turns" checked/>
+            <span>LLM turns</span>
+          </label>
+          <div class="trace__filter" id="trace-filter" hidden>
+            <span class="trace__filter-label">filter:</span>
+            <span class="trace__filter-chip" id="trace-filter-chip"></span>
+            <button class="trace__filter-clear" id="trace-filter-clear" title="clear filter">✕</button>
+          </div>
+        </div>
+        <div class="trace__column-headers" aria-hidden="true">
+          <span class="tr-col tr-col--agent">agent</span>
+          <span class="tr-col tr-col--action">action</span>
+          <span class="tr-col tr-col--subject">subject</span>
+          <span class="tr-col tr-col--status">status</span>
+        </div>
+        <div class="trace__list-wrap">
+          <ol id="trace-list" class="trace__list" tabindex="0"></ol>
+          <div id="trace-empty" class="trace__empty">waiting for the first audit event…</div>
+          <button id="trace-jump" class="trace__jump" hidden>↓ jump to latest</button>
+        </div>
+      </div>
+
+      <div id="summary" class="summary" hidden>
+        <span class="summary__icon" aria-hidden="true">✦</span>
+        <span class="summary__text" id="summary-text"></span>
+        <button class="summary__generate" id="summary-generate" hidden>generate</button>
+        <button class="summary__close" id="summary-close" title="dismiss" aria-label="dismiss summary">✕</button>
+      </div>
+      <div class="ctrl" id="ctrl"></div>
+    </section>
+
+    <!-- Drag to make the trace / graph columns wider or narrower. -->
+    <div class="splitter splitter--col" id="split-col" role="separator"
+         aria-orientation="vertical" tabindex="0"
+         title="drag to resize · double-click to reset"></div>
+
+    <aside class="side">
+      <!-- TOPOLOGY PANEL — secondary "what's declared" view. Cytoscape
+           graph of the spec's static structure. Click a node →
+           `topology-node-selected` filters the trace to rows
+           that involve that node. -->
+      <div class="topology" aria-label="declared topology">
+        <h2 class="topology__title">topology</h2>
+        <div class="stage__frame">
+          <div id="cy"></div>
+          <div id="cy-empty" class="stage__placeholder">waiting for the first audit event…</div>
+          <div class="graph-toolbar" aria-label="graph display controls">
+            <button class="graph-toggle graph-toggle--on" data-layer-toggle="instances" aria-pressed="true">Instances</button>
+            <button class="graph-toggle graph-toggle--on" data-layer-toggle="hitl" aria-pressed="true">HITL</button>
+            <button class="graph-toggle" data-layer-toggle="reshape" aria-pressed="false">Envelope</button>
+            <button class="graph-fit" data-graph-fit title="fit graph" aria-label="fit graph">Fit</button>
+          </div>
+        </div>
+        <div class="graph-legend" aria-label="graph legend">
+          <div><span class="leg leg--declared"></span>declared blueprint</div>
+          <div><span class="leg leg--instance"></span>live instance</div>
+          <div><span class="leg leg--gate"></span>HITL gate</div>
+          <div><span class="leg leg--reshape"></span>permitted reshape</div>
+          <div><span class="leg leg--action"></span>current action</div>
+        </div>
+      </div>
+
+      <!-- Drag to make the graph taller or shorter (vs. the detail panel). -->
+      <div class="splitter splitter--row" id="split-row" role="separator"
+           aria-orientation="horizontal" tabindex="0"
+           title="drag to resize · double-click to reset"></div>
+
+      <!-- DETAIL PANEL — fields for the currently selected trace row.
+           Shows args, full outcome, raw record, kind-specific extras. -->
+      <div class="detail" aria-label="selected span detail">
+        <h2 class="detail__title">details</h2>
+        <div id="detail-body" class="detail__body">
+          <div class="detail__empty">click a trace row to see its details.</div>
+        </div>
+      </div>
+
+      <!-- The legacy events list is now empty/offscreen — its rendering
+           module still runs (it powers the LLM-summary fetch on cursor
+           change), but its DOM is hidden. Stage 3 of the rewrite will
+           remove the module entirely. -->
+      <ul id="events" class="events" hidden></ul>
+
+      <div class="side__foot">
+        anr-viz · audit-log driven · ⏮ ◀ ▶ ⏭ to scrub
+      </div>
+    </aside>
+  </main>
+
+  <!-- Full-content modal: shown when a row's "view full" button is
+       clicked. Click outside, hit Esc, or click ✕ to dismiss. -->
+  <div id="modal" class="modal" hidden>
+    <div class="modal__scrim" data-modal-close></div>
+    <div class="modal__panel" role="dialog" aria-modal="true" tabindex="-1">
+      <header class="modal__head">
+        <div class="modal__title-wrap">
+          <span class="modal__title" id="modal-title"></span>
+          <div class="modal__tabs" id="modal-tabs" hidden>
+            <button class="modal__tab" data-modal-mode="summary">Summary</button>
+            <button class="modal__tab" data-modal-mode="raw">Raw</button>
+          </div>
+        </div>
+        <button class="modal__close" data-modal-close title="close (Esc)" aria-label="close">✕</button>
+      </header>
+      <div class="modal__body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- HITL modal: surfaces a pending human-in-the-loop request from
+       the runtime. Approve / Reject / Modify mirror the three Decision
+       actions the mesh expects. Modify reveals an editable JSON args
+       textarea (pre-filled with the current args). -->
+  <div id="hitl-modal" class="modal" hidden>
+    <div class="modal__scrim" data-hitl-close></div>
+    <div class="modal__panel hitl__panel" role="dialog" aria-modal="true" tabindex="-1">
+      <header class="modal__head">
+        <div class="inspector__head-text">
+          <span class="inspector__title">human-in-the-loop</span>
+          <span class="inspector__subtitle" id="hitl-subtitle"></span>
+        </div>
+        <button class="modal__close" data-hitl-close title="close (Esc)" aria-label="close">✕</button>
+      </header>
+      <div class="hitl__body" id="hitl-body">
+        <!-- Filled by JS: prompt, caller/tool/args summary, action buttons -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Inspector modal: shown when a graph node is clicked. Renders
+       the node's spec config (tools, prompts, HITL gates, reshape
+       rules, etc.) as a structured definition list. -->
+  <div id="inspector" class="modal" hidden>
+    <div class="modal__scrim" data-inspector-close></div>
+    <div class="modal__panel inspector__panel" role="dialog" aria-modal="true" tabindex="-1">
+      <header class="modal__head">
+        <div class="inspector__head-text">
+          <span class="inspector__title" id="inspector-title"></span>
+          <span class="inspector__subtitle" id="inspector-subtitle"></span>
+        </div>
+        <button class="modal__close" data-inspector-close title="close (Esc)" aria-label="close">✕</button>
+      </header>
+      <div class="inspector__body" id="inspector-body"></div>
+    </div>
+  </div>
+
+  <script>
+  // =====================================================================
+  // Graph (cytoscape, deterministic column-per-kind grid layout)
+  // =====================================================================
+  (function () {
+    if (typeof cytoscape !== 'function') { return; }
+
+    const STYLES = [
+      // ---------- Nodes ----------
+      {
+        selector: 'node',
+        style: {
+          'label': 'data(label)',
+          'color': '#d6dbe2',
+          'text-valign': 'center',
+          'text-halign': 'center',
+          'text-wrap': 'wrap',
+          'font-size': 12,
+          'font-weight': 600,
+          'background-color': '#1c2027',
+          'border-width': 1.5,
+          'border-color': '#262b33',
+          'shape': 'round-rectangle',
+          'width': 168,
+          'height': 58,
+          'padding': '6px',
+          'transition-property':
+            'background-color, border-color, border-width, overlay-opacity',
+          'transition-duration': '180ms',
+        },
+      },
+      {
+        selector: 'node[sublabel]',
+        style: {
+          'label': function (e) {
+            const l = e.data('label');
+            const s = e.data('sublabel');
+            return s ? l + '\n' + s : l;
+          },
+          'text-wrap': 'wrap',
+          'line-height': 1.25,
+          'font-size': 11.5,
+        },
+      },
+      { selector: 'node[kind = "data"]',
+        style: {
+          'shape': 'barrel',
+          'background-color': '#1a1e25',
+          'border-color': '#262b33',
+        } },
+      { selector: 'node[kind = "tool"]',
+        style: {
+          'shape': 'round-hexagon',
+          'background-color': '#1d2229',
+          'border-color': '#36404c',
+          'width': 164,
+          'height': 64,
+        } },
+      { selector: 'node[kind = "agent"]',
+        style: {
+          'background-color': '#1d2526',
+          'border-color': '#3a4a48',
+        } },
+      { selector: 'node[kind = "agent"][?tag_entry]',
+        style: { 'border-color': '#8aa4c0', 'border-width': 2 } },
+      { selector: 'node[kind = "agent"][?tag_script]',
+        style: { 'border-color': '#c9a36a', 'border-style': 'dashed' } },
+      { selector: 'node[kind = "template"]',
+        style: {
+          'background-color': '#221f29',
+          'border-color': '#a596c8',
+          'border-style': 'dashed',
+          'border-width': 1.5,
+        } },
+      { selector: 'node[kind = "instance"]',
+        style: {
+          'shape': 'round-rectangle',
+          'background-color': '#1a1f28',
+          'border-color': '#8aa4c0',
+          'border-style': 'dotted',
+          'width': 154,
+          'height': 48,
+          'font-size': 10.5,
+          'font-weight': 600,
+        } },
+      { selector: 'node[kind = "hitl"]',
+        style: {
+          'shape': 'diamond',
+          'background-color': '#2a241b',
+          'border-color': '#c9a36a',
+          'width': 86,
+          'height': 52,
+          'font-size': 9.5,
+          'font-weight': 700,
+          'color': '#d6b889',
+        } },
+      { selector: 'node[?has_hitl]',
+        style: { 'border-color': '#c9a36a', 'border-width': 2 } },
+      { selector: 'node.active',
+        style: {
+          'background-color': 'rgba(138, 164, 192, 0.16)',
+          'border-color': '#8aa4c0',
+          'border-width': 2.5,
+          'overlay-color': '#8aa4c0',
+          'overlay-opacity': 0.18,
+          'overlay-padding': 10,
+        } },
+
+      // Cross-panel highlight: when a trace row is selected, the
+      // topology nodes the row touched get `tr-highlight`; everything
+      // else gets `tr-dim`. The dim is a soft fade, not a hide, so the
+      // surrounding context stays readable.
+      { selector: 'node.tr-highlight',
+        style: {
+          'border-color': '#8ab99a',
+          'border-width': 3,
+          'overlay-color': '#8ab99a',
+          'overlay-opacity': 0.18,
+          'overlay-padding': 10,
+        } },
+      { selector: 'node.tr-dim',
+        style: { 'opacity': 0.30 } },
+      { selector: 'edge.tr-highlight',
+        style: {
+          'line-color': '#8ab99a',
+          'target-arrow-color': '#8ab99a',
+          'source-arrow-color': '#8ab99a',
+          'line-style': 'solid',
+          'width': 2.4,
+          'opacity': 1,
+        } },
+      { selector: 'edge.tr-dim',
+        style: { 'opacity': 0.18 } },
+
+      // ---------- Edges ----------
+      // Inactive edges deliberately fade into the background so the
+      // firing edges stand out. Reshape edges (potential capabilities
+      // that may never fire) are hidden entirely until they actually
+      // fire — they're kept in the cytoscape graph so the column layout
+      // stays stable, just rendered invisible.
+      {
+        selector: 'edge',
+        style: {
+          'curve-style': 'bezier',
+          'width': 1.2,
+          'line-color': '#4a5260',
+          'line-style': 'dashed',
+          'line-dash-pattern': [4, 4],
+          'opacity': 0.65,
+          'target-arrow-shape': 'triangle',
+          'target-arrow-color': '#4a5260',
+          'arrow-scale': 0.8,
+          'label': 'data(label)',
+          'font-size': 9.5,
+          'color': '#7a818b',
+          'text-background-color': '#0f1216',
+          'text-background-opacity': 1,
+          'text-background-padding': 2,
+          'text-rotation': 'autorotate',
+          // Static edge labels are noise in a grid — they float between
+          // columns and crowd the small panel. The live firing-edge pill
+          // carries the verb that actually matters; structural edges stay
+          // unlabeled and just show the wiring.
+          'text-opacity': 0,
+          'transition-property':
+            'line-color, target-arrow-color, source-arrow-color, width, opacity, text-opacity',
+          'transition-duration': '180ms',
+        },
+      },
+      // Same-column edges (e.g. agent→agent delegation) would otherwise
+      // draw a straight vertical line through the nodes stacked between
+      // their endpoints. Bow them out to the right so they read cleanly.
+      { selector: 'edge.same-col',
+        style: {
+          'curve-style': 'unbundled-bezier',
+          'control-point-distances': [60],
+          'control-point-weights': [0.5],
+        } },
+      { selector: 'edge[?reversed]',
+        style: {
+          'source-arrow-shape': 'triangle',
+          'source-arrow-color': '#4a5260',
+          'target-arrow-shape': 'none',
+        } },
+      { selector: 'edge[kind = "delegation_edge"]',
+        style: {
+          'line-color': '#4d6680',
+          'target-arrow-color': '#4d6680',
+          'source-arrow-color': '#4d6680',
+          'opacity': 0.75,
+          'width': 1.3,
+        } },
+      { selector: 'edge[kind = "data_binding"]',
+        style: {
+          'line-dash-pattern': [2, 4],
+          'opacity': 0.4,
+          'width': 1.0,
+          'arrow-scale': 0.65,
+        } },
+      { selector: 'edge[kind = "hitl_gate"]',
+        style: {
+          'line-color': '#8a7548',
+          'target-arrow-color': '#8a7548',
+          'source-arrow-color': '#8a7548',
+          'line-dash-pattern': [1, 4],
+          'opacity': 0.75,
+          'width': 1.1,
+          'arrow-scale': 0.65,
+          'label': 'gate',
+          'text-opacity': 0,
+        } },
+      { selector: 'edge[kind = "instance_of"]',
+        style: {
+          'line-color': '#5a6472',
+          'target-arrow-color': '#5a6472',
+          'line-dash-pattern': [2, 6],
+          'opacity': 0.55,
+          'width': 1.0,
+          'arrow-scale': 0.55,
+          'text-opacity': 0,
+        } },
+      { selector: 'edge[kind = "runtime_parent"]',
+        style: {
+          'line-color': '#8aa4c0',
+          'target-arrow-color': '#8aa4c0',
+          'line-dash-pattern': [5, 3],
+          'opacity': 0.72,
+          'width': 1.4,
+          'arrow-scale': 0.75,
+          'label': 'sub-agent',
+          'text-opacity': 0.75,
+        } },
+      { selector: 'edge[kind = "runtime_action"]',
+        style: {
+          'opacity': 0,
+          'text-opacity': 0,
+          'events': 'no',
+        } },
+      // Reshape edges are potential, not actual: they show what the
+      // envelope permits. Runtime actions draw bright temporary edges.
+      { selector:
+          'edge[kind = "reshape_spawn"], edge[kind = "reshape_acquire"], edge[kind = "reshape_template"]',
+        style: {
+          'line-color': '#7c708c',
+          'target-arrow-color': '#7c708c',
+          'source-arrow-color': '#7c708c',
+          'line-dash-pattern': [6, 6],
+          'opacity': 0.26,
+          'text-opacity': 0.42,
+          'color': '#a596c8',
+          'events': 'no',
+        } },
+      // Firing — solid bright line + verb pill at the midpoint. Resets
+      // line-style and re-enables events for reshape edges that are
+      // hidden by default.
+      {
+        selector: 'edge.firing',
+        style: {
+          'line-color': '#8aa4c0',
+          'target-arrow-color': '#8aa4c0',
+          'source-arrow-color': '#8aa4c0',
+          'line-style': 'solid',
+          'width': 3,
+          'opacity': 1,
+          'text-opacity': 1,
+          'events': 'yes',
+          'arrow-scale': 1.0,
+          'overlay-color': '#8aa4c0',
+          'overlay-opacity': 0.16,
+          'overlay-padding': 6,
+          'label': 'data(firing_label)',
+          'color': '#0f1216',
+          'font-size': 11,
+          'font-weight': 700,
+          'text-background-color': '#8aa4c0',
+          'text-background-opacity': 1,
+          'text-background-shape': 'round-rectangle',
+          'text-background-padding': 4,
+          'text-border-width': 0,
+          'text-margin-y': 0,
+          'text-rotation': 0,
+          'z-compound-depth': 'top',
+        },
+      },
+    ];
+
+    // -----------------------------------------------------------------
+    // Deterministic grid layout. We deliberately do NOT use a graph
+    // solver (dagre et al.) — those produce a wide left-to-right drawing
+    // that gets shrunk into illegibility inside this narrow side panel,
+    // and the node positions jump around every time an instance appears.
+    //
+    // Instead: one column per node kind, nodes stacked top-to-bottom in
+    // a stable (id-sorted) order. The result is predictable, never
+    // overlaps, and stays put as the run evolves. Edges are still drawn,
+    // but they are scenery — the live overlay (active node + firing
+    // edge) is what communicates "what's happening right now".
+    // -----------------------------------------------------------------
+    const KIND_ORDER = ['data', 'tool', 'hitl', 'agent', 'template', 'instance'];
+    const COL_W = 196;   // horizontal distance between kind columns
+    const ROW_H = 84;    // vertical distance between stacked nodes
+
+    function gridLayout() {
+      const byKind = {};
+      cy.nodes().forEach(function (n) {
+        const k = n.data('kind');
+        (byKind[k] = byKind[k] || []).push(n);
+      });
+      // Only kinds actually present consume a column, so a spec with no
+      // templates doesn't leave an empty gap.
+      const present = KIND_ORDER.filter(function (k) {
+        return byKind[k] && byKind[k].length;
+      });
+      cy.batch(function () {
+        present.forEach(function (k, ci) {
+          const x = ci * COL_W;
+          const nodes = byKind[k].slice().sort(function (a, b) {
+            return a.id() < b.id() ? -1 : a.id() > b.id() ? 1 : 0;
+          });
+          const total = nodes.length;
+          nodes.forEach(function (n, ri) {
+            // Center each column vertically around y=0.
+            const y = (ri - (total - 1) / 2) * ROW_H;
+            n.position({ x: x, y: y });
+          });
+        });
+        // Tag edges whose endpoints sit in the same column so they bow
+        // out instead of slicing straight through the stack.
+        cy.edges().forEach(function (e) {
+          const sameCol =
+            Math.abs(e.source().position('x') - e.target().position('x')) < 1;
+          e.toggleClass('same-col', sameCol);
+        });
+      });
+      fitGraph();
+    }
+
+    // Fit the whole grid into the panel, reserving a strip at the top so
+    // the floating toolbar buttons never sit on top of the first row of
+    // nodes. (Plain cy.fit uses uniform padding and can't do this.)
+    const TOP_INSET = 50;
+    function fitGraph() {
+      const bb = cy.elements().boundingBox();
+      if (!bb || !isFinite(bb.w) || bb.w === 0 || bb.h === 0) {
+        cy.fit(undefined, 30);
+        return;
+      }
+      const W = cy.width(), H = cy.height();
+      const padX = 24, padBottom = 20;
+      const availW = Math.max(1, W - 2 * padX);
+      const availH = Math.max(1, H - TOP_INSET - padBottom);
+      let z = Math.min(availW / bb.w, availH / bb.h);
+      z = Math.max(cy.minZoom(), Math.min(cy.maxZoom(), z));
+      cy.zoom(z);
+      cy.pan({
+        x: (W - bb.w * z) / 2 - bb.x1 * z,
+        y: TOP_INSET - bb.y1 * z,
+      });
+    }
+
+
+    const cy = cytoscape({
+      container: document.getElementById('cy'),
+      style: STYLES,
+      minZoom: 0.3,
+      maxZoom: 3.5,
+      boxSelectionEnabled: false,
+    });
+
+    let lastStructHash = null;
+    let inFlight = false;
+    let latestPayload = null;
+    const layers = {
+      instances: true,
+      hitl: true,
+      reshape: false,
+    };
+
+    function structHash(elements) {
+      const ids = [];
+      for (const el of elements) {
+        if (el.group === 'nodes') {
+          ids.push('n:' + el.data.id);
+        } else {
+          ids.push('e:' + el.data.id + '|' + el.data.source + '>' + el.data.target);
+        }
+      }
+      ids.sort();
+      return ids.join(',');
+    }
+
+    function expandTags(elements) {
+      for (const el of elements) {
+        if (el.group !== 'nodes') continue;
+        const tags = el.data.tags || [];
+        el.data.tag_entry = tags.includes('entry');
+        el.data.tag_script = tags.includes('agent:script');
+      }
+      return elements;
+    }
+
+    function isReshapeKind(kind) {
+      return kind === 'reshape_spawn' ||
+             kind === 'reshape_acquire' ||
+             kind === 'reshape_template';
+    }
+
+    function filteredElements(elements) {
+      return elements.filter(function (el) {
+        const d = el.data || {};
+        if (!layers.instances &&
+            (d.kind === 'instance' ||
+             d.kind === 'instance_of' ||
+             d.kind === 'runtime_parent' ||
+             d.kind === 'runtime_action')) {
+          return false;
+        }
+        if (!layers.hitl && (d.kind === 'hitl' || d.kind === 'hitl_gate')) {
+          return false;
+        }
+        if (!layers.reshape && isReshapeKind(d.kind)) {
+          return false;
+        }
+        return true;
+      });
+    }
+
+    function applyLive(live) {
+      cy.batch(function () {
+        cy.elements().removeClass('active firing');
+        cy.edges().forEach(function (e) { e.removeData('firing_label'); });
+        if (live.active_node_id) {
+          let active = cy.getElementById(live.active_node_id);
+          if (!active.length && live.active_node_id.startsWith('inst:')) {
+            const inst = live.active_node_id.slice(5);
+            const blueprint = inst.split('#')[0];
+            active = cy.getElementById('agent:' + blueprint);
+            if (!active.length) active = cy.getElementById('template:' + blueprint);
+          }
+          if (active.length) active.addClass('active');
+        }
+        for (const fe of live.firing_edges || []) {
+          const e = cy.getElementById(fe.id);
+          if (e && e.length) {
+            e.data('firing_label', fe.label || '');
+            e.addClass('firing');
+          }
+        }
+      });
+    }
+
+    function renderPayload(payload) {
+      latestPayload = payload;
+      const elements = filteredElements(expandTags(payload.elements || []));
+      const hash = structHash(elements) + '|layers:' +
+        (layers.instances ? 'I' : '-') +
+        (layers.hitl ? 'H' : '-') +
+        (layers.reshape ? 'R' : '-');
+      if (hash !== lastStructHash) {
+        cy.elements().remove();
+        cy.add(elements);
+        gridLayout();
+        lastStructHash = hash;
+        document.getElementById('cy-empty').style.display =
+          elements.length ? 'none' : 'block';
+      }
+      applyLive(payload.live || {});
+    }
+
+    async function refresh() {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const r = await fetch('/state/graph.json', { cache: 'no-store' });
+        if (!r.ok) return;
+        const payload = await r.json();
+        renderPayload(payload);
+      } catch (e) {
+        // best-effort
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    function syncToggleButtons() {
+      document.querySelectorAll('[data-layer-toggle]').forEach(function (btn) {
+        const key = btn.getAttribute('data-layer-toggle');
+        const on = !!layers[key];
+        btn.classList.toggle('graph-toggle--on', on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    }
+
+    refresh();
+    setInterval(refresh, 250);
+    document.body.addEventListener('cursor-changed', refresh);
+    window.addEventListener('resize', function () {
+      cy.resize();
+      fitGraph();
+    });
+    document.querySelectorAll('[data-layer-toggle]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        const key = btn.getAttribute('data-layer-toggle');
+        layers[key] = !layers[key];
+        syncToggleButtons();
+        lastStructHash = null;
+        if (latestPayload) renderPayload(latestPayload);
+      });
+    });
+    const fitBtn = document.querySelector('[data-graph-fit]');
+    if (fitBtn) {
+      fitBtn.addEventListener('click', function () { fitGraph(); });
+    }
+    syncToggleButtons();
+
+    // Single-click filters the trace; double-click opens the inspector.
+    // The previous combined behavior had inspector covering the filtered
+    // trace — Codex flagged this in dialogue turn 6. Now the gestures
+    // are separate: one for cross-panel filtering, one for spec deep-dive.
+    cy.on('tap', 'node', function (evt) {
+      const id = evt.target.id();
+      document.body.dispatchEvent(
+        new CustomEvent('topology-node-selected', { detail: { id: id } })
+      );
+    });
+    cy.on('dbltap', 'node', function (evt) {
+      const id = evt.target.id();
+      if (typeof window.openInspector === 'function') window.openInspector(id);
+    });
+    cy.on('tap', function (evt) {
+      // Tapping background clears the trace filter.
+      if (evt.target === cy) {
+        document.body.dispatchEvent(
+          new CustomEvent('topology-node-selected', { detail: { id: null } })
+        );
+      }
+    });
+    // Pointer cursor on hover so it's clear nodes are clickable.
+    cy.on('mouseover', 'node', function () { cy.container().style.cursor = 'pointer'; });
+    cy.on('mouseout',  'node', function () { cy.container().style.cursor = ''; });
+
+    // Cross-panel highlight: when a trace row is selected, light up the
+    // topology nodes the row's audit record actually touched. We use a
+    // dedicated `tr-highlight` class so it doesn't fight the existing
+    // `firing` / `active` styling that comes from the audit overlay.
+    document.body.addEventListener('trace-row-selected', function (e) {
+      const ids = (e.detail && e.detail.target_node_ids) || [];
+      cy.batch(function () {
+        cy.elements().removeClass('tr-highlight tr-dim');
+        if (!ids.length) return;
+        ids.forEach(function (nid) {
+          const el = cy.getElementById(nid);
+          if (el && el.length) el.addClass('tr-highlight');
+        });
+        // Dim everything else so the highlight pops against the rest of
+        // the topology. This is a soft dim — readable but de-emphasised.
+        cy.nodes().forEach(function (n) {
+          if (!n.hasClass('tr-highlight')) n.addClass('tr-dim');
+        });
+        cy.edges().forEach(function (ed) {
+          // Highlight edges whose endpoints are both in the highlight set.
+          const s = ed.source().id();
+          const t = ed.target().id();
+          if (ids.indexOf(s) !== -1 && ids.indexOf(t) !== -1) {
+            ed.addClass('tr-highlight');
+          } else {
+            ed.addClass('tr-dim');
+          }
+        });
+      });
+    });
+  })();
+
+  // =====================================================================
+  // Trace panel — primary live view. Renders the four-column row grammar
+  // agreed in DIALOGUE.md turn 9: agent | action | subject | status.
+  //
+  // All display strings come from /state/trace.json (server-projected
+  // display fields) so this module never re-parses audit shape. Layered
+  // disclosure: collapsed row → hover tooltip → inline expand → side
+  // detail panel. Each layer adds new info, never duplicates the layer
+  // above (turn 9 disclosure table).
+  // =====================================================================
+  (function () {
+    const listEl     = document.getElementById('trace-list');
+    const emptyEl    = document.getElementById('trace-empty');
+    const detailEl   = document.getElementById('detail-body');
+    const filterEl   = document.getElementById('trace-filter');
+    const filterChip = document.getElementById('trace-filter-chip');
+    const filterClr  = document.getElementById('trace-filter-clear');
+    const turnsToggle = document.getElementById('trace-show-turns');
+    if (!listEl) return;
+
+    const jumpEl     = document.getElementById('trace-jump');
+
+    // ---- client state ------------------------------------------------
+    let rows = [];                          // raw row payloads from server
+    let lastStructSig = '';                 // signature of the visible row set
+    let inFlight = false;
+    let selectedId = null;                  // selected (detailed) trace row id
+    let expandedId = null;                  // the single inline-expanded row (accordion)
+    let topoFilterNodeId = null;            // active topology-filter
+    let currentIndex = -1;
+    let liveMode = true;
+    let showTurns = turnsToggle ? !!turnsToggle.checked : true;
+
+    // Tail-follow ("stick to bottom") discipline, like a console / tail -f:
+    // when the list is scrolled to the bottom we auto-follow new events;
+    // once the user scrolls up (or clicks a row) we leave their view alone
+    // and surface a "jump to latest" affordance instead of yanking them
+    // back. `followLatest` is the live-tail intent; it is governed by the
+    // scroll position, never forced by incoming data.
+    let followLatest = true;
+    // Programmatic scrolls (auto-tail, scroll-into-view on time-travel)
+    // would otherwise look like user scrolls and flip followLatest. We
+    // ignore scroll events inside a short window after we move the list
+    // ourselves.
+    let suppressScrollUntil = 0;
+
+    // ---- helpers -----------------------------------------------------
+
+    function escHtml(s) {
+      if (s === null || s === undefined) return '';
+      return String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function fmtSec(n) {
+      if (typeof n !== 'number') return '+0.0s';
+      if (n < 60) return '+' + n.toFixed(1) + 's';
+      const m = Math.floor(n / 60);
+      const s = n - m * 60;
+      return '+' + m + 'm' + s.toFixed(0) + 's';
+    }
+
+    // Topology-filter visibility: a row is in-scope when its caller or
+    // any of its target nodes is the filtered node.
+    function inFilter(row) {
+      if (!topoFilterNodeId) return true;
+      return row.target_node_ids &&
+        row.target_node_ids.indexOf(topoFilterNodeId) !== -1;
+    }
+
+    // Audit-shape duplicates we collapse — both pairs are two records
+    // for the same conceptual event:
+    //
+    //   1. HITL ack: a `hitl_checkpoint` row is followed by the
+    //      matching `tool_call` for `request_human_review`. The gate
+    //      row already carries the decision; the ack adds nothing.
+    //   2. Reshape ack: a `reshape` row (e.g. instantiate_template)
+    //      is followed by the corresponding `tool_call`. The
+    //      tool_call carries the rich result (the new agent's reply),
+    //      which is what we want — so we drop the *reshape* row.
+    function isAuditDuplicate(row, prev) {
+      if (!prev) return false;
+      if (prev.caller_instance_id !== row.caller_instance_id) return false;
+      // HITL ack: drop the tool_call after a hitl_checkpoint
+      if (prev.kind === 'hitl_checkpoint' &&
+          row.kind === 'tool_call' &&
+          row.tool === 'request_human_review') {
+        return true;
+      }
+      // Reshape ack: drop the reshape row when followed by the
+      // matching tool_call. (We already saw this prev was reshape; the
+      // current row is the substantive one.)
+      // Implemented in the inverse direction: see hidePrevReshape().
+      return false;
+    }
+
+    // Look-ahead variant: returns true when the current row is a
+    // `reshape` whose IMMEDIATE next record is the matching tool_call.
+    // We hide the reshape (the tool_call has the result text).
+    function isReshapePrecedingItsAck(rowIdx) {
+      const row = rows[rowIdx];
+      if (!row || row.kind !== 'reshape') return false;
+      const nxt = rows[rowIdx + 1];
+      if (!nxt) return false;
+      if (nxt.caller_instance_id !== row.caller_instance_id) return false;
+      if (nxt.kind !== 'tool_call') return false;
+      // Match by either change or tool, since reshape records carry
+      // change=instantiate_template / acquire_capability while tool_call
+      // carries tool=instantiate_template / request_grant.
+      const reshapeChange = row.extras && row.extras.change;
+      if (reshapeChange === 'instantiate_template' && nxt.tool === 'instantiate_template') return true;
+      if (reshapeChange === 'acquire_capability' && nxt.tool === 'request_grant') return true;
+      return false;
+    }
+
+    // Per-row visibility & "hidden turns" run-counting in one pass.
+    // Returns an array of either rendered rows or "{hiddenTurns: n}"
+    // separator markers, which renderRows turns into separator lines.
+    function buildRenderItems() {
+      const items = [];
+      let prevRendered = null;
+      let pendingHiddenTurns = 0;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (!inFilter(row)) continue;
+        if (isAuditDuplicate(row, prevRendered)) continue;
+        if (isReshapePrecedingItsAck(i)) continue;
+        if (!showTurns && row.kind === 'agent_turn') {
+          pendingHiddenTurns++;
+          continue;
+        }
+        if (pendingHiddenTurns >= 3) {
+          items.push({ kind: 'sep', count: pendingHiddenTurns });
+        }
+        pendingHiddenTurns = 0;
+        items.push({ kind: 'row', row: row });
+        prevRendered = row;
+      }
+      // Don't emit a trailing separator — we don't know if more turns
+      // are coming, and the visual hint is most useful between actions.
+      return items;
+    }
+
+    // Returns the most recently visible row at or before ``idx`` using
+    // the same visibility predicate as buildRenderItems(). Used by the
+    // auto-follow logic so it never lands on a row the trace hides.
+    function latestVisibleAtOrBefore(idx) {
+      let prev = null;
+      const cap = Math.min(idx, rows.length - 1);
+      for (let i = 0; i <= cap; i++) {
+        const row = rows[i];
+        if (!inFilter(row)) continue;
+        if (isAuditDuplicate(row, prev)) continue;
+        if (isReshapePrecedingItsAck(i)) continue;
+        if (!showTurns && row.kind === 'agent_turn') continue;
+        prev = row;
+      }
+      return prev;
+    }
+
+    function indentClass(depth) {
+      return 'tr-row-d' + Math.min(depth || 0, 6);
+    }
+
+    function categoryClass(cat) {
+      return cat ? ('tr-cat-' + cat) : '';
+    }
+
+    function rowHoverTitle(row) {
+      // Layer 2 (hover tooltip): exact-but-light context. Adds info the
+      // collapsed row deliberately omits — the full instance id, exact
+      // timestamp, depth.
+      const parts = [];
+      parts.push('instance: ' + (row.caller_instance_id || '(none)'));
+      parts.push('t: ' + fmtSec(row.ts_offset_sec) + '  depth ' + (row.depth || 0));
+      if (row.parent_instance_id) parts.push('parent: ' + row.parent_instance_id);
+      return parts.join('\n');
+    }
+
+    // A row is expandable iff it carries something the inline-expand
+    // surface would actually show (args / outcome / kind-specific extras).
+    function hasInlineDetail(row) {
+      const a = row.raw && row.raw.args;
+      const hasArgs = a && Object.keys(a).length > 0;
+      const hasOutcome = !!(row.raw && row.raw.outcome);
+      const hasExtras = row.extras && Object.keys(row.extras).length > 0;
+      return !!(hasArgs || hasOutcome || hasExtras);
+    }
+
+    function renderRowHtml(row) {
+      const sel = row.id === selectedId ? ' tr-row--selected' : '';
+      const exp = expandedId === row.id ? ' tr-row--expanded' : '';
+      const indent = indentClass(row.depth);
+      const cat = categoryClass(row.category);
+
+      // Disclosure caret — a clear "this row expands" affordance (rows
+      // with nothing to expand get an invisible placeholder so the
+      // columns stay aligned). Rotates when open via the
+      // .tr-row--expanded selector in CSS.
+      const caret = hasInlineDetail(row)
+        ? '<span class="tr-caret" aria-hidden="true">▸</span>'
+        : '<span class="tr-caret tr-caret--off" aria-hidden="true"></span>';
+
+      // Subject column — only show as a separate token if it's
+      // meaningfully different from the action label. For HITL rows the
+      // subject is the checkpoint id; for tool calls it's the args; etc.
+      const subjectCell = row.subject_label
+        ? '<span class="tr-col tr-col--subject" title="' + escHtml(row.subject_label) + '">' +
+            escHtml(row.subject_label) + '</span>'
+        : '<span class="tr-col tr-col--subject"></span>';
+      const statusCell = row.status_label
+        ? '<span class="tr-col tr-col--status" title="' + escHtml(row.status_label) + '">' +
+            escHtml(row.status_label) + '</span>'
+        : '<span class="tr-col tr-col--status"></span>';
+
+      const inst = row.instance_label
+        ? '<span class="tr-inst">' + escHtml(row.instance_label) + '</span>'
+        : '';
+
+      // The action cell carries the category color.
+      const actionCell =
+        '<span class="tr-col tr-col--action ' + cat + '">' +
+          escHtml(row.action_label) +
+        '</span>';
+      const num = '<span class="tr-num">' + (row.index + 1) + '.</span>';
+      const agentCell =
+        '<span class="tr-col tr-col--agent">' +
+          caret + num + escHtml(row.agent_label) + inst +
+        '</span>';
+
+      const main =
+        '<div class="tr-row__main">' +
+          agentCell + actionCell + subjectCell + statusCell +
+        '</div>';
+
+      const expanded = expandedId === row.id ? renderInlineExpand(row) : '';
+
+      return (
+        '<li class="tr-row ' + indent + ' ' + cat + sel + exp +
+        '" data-id="' + escHtml(row.id) +
+        '" data-index="' + row.index + '"' +
+        ' title="' + escHtml(rowHoverTitle(row)) + '">' +
+          main + expanded +
+        '</li>'
+      );
+    }
+
+    function renderSeparatorHtml(count) {
+      return (
+        '<li class="tr-sep" aria-hidden="true">' +
+          '<span class="tr-sep__line"></span>' +
+          '<span class="tr-sep__text">' + count + ' LLM turn' +
+            (count === 1 ? '' : 's') + ' hidden</span>' +
+          '<span class="tr-sep__line"></span>' +
+        '</li>'
+      );
+    }
+
+    function renderInlineExpand(row) {
+      // Layer 3 (inline expand): args, full short result, extras,
+      // parent_id. Does NOT duplicate what hover or the side panel
+      // already show — this is the quick-peek layer.
+      const parts = [];
+      const args = row.raw && row.raw.args;
+      if (args && Object.keys(args).length) {
+        parts.push(
+          '<div class="tr-x__row"><span class="tr-x__key">args</span>' +
+          '<pre class="tr-x__pre">' + escHtml(JSON.stringify(args, null, 2)) +
+          '</pre></div>'
+        );
+      }
+      const outcome = row.raw && row.raw.outcome;
+      if (outcome) {
+        const text = outcome.value_preview || outcome.error || JSON.stringify(outcome);
+        const cls = outcome.ok === false ? 'tr-x__pre tr-x__pre--bad' : 'tr-x__pre';
+        parts.push(
+          '<div class="tr-x__row"><span class="tr-x__key">' +
+          (outcome.ok === false ? 'refused' : 'result') +
+          '</span><pre class="' + cls + '">' + escHtml(text) + '</pre></div>'
+        );
+      }
+      if (row.extras && Object.keys(row.extras).length) {
+        parts.push(
+          '<div class="tr-x__row"><span class="tr-x__key">meta</span>' +
+          '<pre class="tr-x__pre">' + escHtml(JSON.stringify(row.extras, null, 2)) +
+          '</pre></div>'
+        );
+      }
+      return '<div class="tr-x">' + parts.join('') + '</div>';
+    }
+
+    function renderRows() {
+      if (!rows.length) {
+        listEl.innerHTML = '';
+        emptyEl.style.display = 'block';
+        return;
+      }
+      emptyEl.style.display = 'none';
+      const items = buildRenderItems();
+      const visibleCount = items.filter(function (x) { return x.kind === 'row'; }).length;
+
+      listEl.innerHTML = items.map(function (it) {
+        return it.kind === 'row' ? renderRowHtml(it.row) : renderSeparatorHtml(it.count);
+      }).join('');
+
+      if (topoFilterNodeId) {
+        filterEl.hidden = false;
+        filterChip.textContent =
+          topoFilterNodeId + '  (' + visibleCount + ' / ' + rows.length + ')';
+      } else {
+        filterEl.hidden = true;
+      }
+    }
+
+    // Select a row: drives the side detail panel + topology highlight.
+    // `opts.user` marks an explicit user action (click / keyboard), which
+    // detaches live-tail following so the run streaming on doesn't yank
+    // the selection away. `opts.scroll` brings the row into view.
+    //
+    // Selection is decoupled from time-travel: clicking a row never moves
+    // the server cursor (that's the ⏮◀▶⏭ controls' job) — it only updates
+    // the local selection / topology highlight / detail panel.
+    function selectRow(rowId, opts) {
+      opts = opts || {};
+      const row = rows.find(function (r) { return r.id === rowId; });
+      if (!row) return;
+      selectedId = rowId;
+      if (opts.user) followLatest = false;
+
+      listEl.querySelectorAll('.tr-row--selected').forEach(function (el) {
+        el.classList.remove('tr-row--selected');
+      });
+      const el = listEl.querySelector('[data-id="' + CSS.escape(rowId) + '"]');
+      if (el) {
+        el.classList.add('tr-row--selected');
+        if (opts.scroll) {
+          suppressScrollUntil = performance.now() + 150;
+          el.scrollIntoView({ block: 'nearest' });
+        }
+      }
+
+      document.body.dispatchEvent(
+        new CustomEvent('trace-row-selected', { detail: row })
+      );
+      renderDetail(row);
+      if (opts.user) updateJumpButton();
+    }
+
+    // Accordion inline expand — at most ONE row is expanded at a time, so
+    // the list never grows into a wall of open rows. Surgical DOM update:
+    // we collapse the previously-open row and open the target without
+    // rebuilding the list, so scroll / text selection stay put.
+    function collapseExpandedDom() {
+      if (!expandedId) return;
+      const li = listEl.querySelector('[data-id="' + CSS.escape(expandedId) + '"]');
+      if (li) {
+        li.classList.remove('tr-row--expanded');
+        const x = li.querySelector('.tr-x');
+        if (x) x.remove();
+      }
+    }
+
+    // Expand exactly `id` (collapsing whatever was open), or collapse all
+    // when `id` is null / the row has nothing to show.
+    function setExpanded(id) {
+      if (id && id === expandedId) return;   // already open
+      collapseExpandedDom();
+      expandedId = null;
+      if (!id) return;
+      const row = rows.find(function (r) { return r.id === id; });
+      if (!row || !hasInlineDetail(row)) return;
+      const li = listEl.querySelector('[data-id="' + CSS.escape(id) + '"]');
+      if (li) {
+        li.classList.add('tr-row--expanded');
+        if (!li.querySelector('.tr-x')) {
+          li.insertAdjacentHTML('beforeend', renderInlineExpand(row));
+        }
+      }
+      expandedId = id;
+    }
+
+    // Click the open row again → collapse it (nothing expanded).
+    function toggleExpanded(id) {
+      if (expandedId === id) setExpanded(null);
+      else setExpanded(id);
+    }
+
+    function renderDetail(row) {
+      // Layer 4 (side panel): the full audit precision view. Includes
+      // the raw record, topology ids, parent chain — info the inline
+      // expand deliberately omits.
+      const sections = [];
+      sections.push(
+        '<div class="detail__row"><span class="detail__key">caller</span>' +
+        '<span>' + escHtml(row.agent_label || row.caller) +
+        (row.caller_instance_id ? ' · ' + escHtml(row.caller_instance_id) : '') +
+        '</span></div>'
+      );
+      sections.push(
+        '<div class="detail__row"><span class="detail__key">when</span>' +
+        '<span>' + fmtSec(row.ts_offset_sec) + ' · depth ' + (row.depth || 0) +
+        ' · ts ' + (row.ts ? row.ts.toFixed(3) : '') +
+        '</span></div>'
+      );
+      sections.push(
+        '<div class="detail__row"><span class="detail__key">action</span>' +
+        '<span>' + escHtml(row.action_label) +
+        ' <em>(' + escHtml(row.kind) + ', ' + escHtml(row.tool || 'n/a') + ')</em>' +
+        '</span></div>'
+      );
+      if (row.parent_instance_id) {
+        sections.push(
+          '<div class="detail__row"><span class="detail__key">parent</span>' +
+          '<span>' + escHtml(row.parent_instance_id) + '</span></div>'
+        );
+      }
+      if (row.target_node_ids && row.target_node_ids.length) {
+        const tags = row.target_node_ids.map(function (n) {
+          return '<span class="detail__tag">' + escHtml(n) + '</span>';
+        }).join('');
+        sections.push(
+          '<div class="detail__row"><span class="detail__key">topology</span>' +
+          '<span class="detail__tags">' + tags + '</span></div>'
+        );
+      }
+      // Always include the raw record at the bottom — this is the
+      // panel's distinguishing job vs. the inline expand.
+      sections.push(
+        '<div class="detail__row detail__row--block"><span class="detail__key">raw</span>' +
+        '<pre class="detail__pre">' + escHtml(JSON.stringify(row.raw, null, 2)) +
+        '</pre></div>'
+      );
+      detailEl.innerHTML = sections.join('');
+    }
+
+    // Signature of the *visible row set* — what actually affects the DOM.
+    // Includes per-row content (outcome/status) so an in-flight row that
+    // later resolves (tool_call_start → tool_call merge) triggers a
+    // rebuild even though the row count is unchanged. Deliberately
+    // EXCLUDES the cursor: stepping the time cursor must not rebuild the
+    // whole list (it only moves the lightweight "current" indicator).
+    function structSignature() {
+      let s = (showTurns ? '1' : '0') + '|' + (topoFilterNodeId || '') + '|' + rows.length;
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        const ok = (r.outcome_ok === null || r.outcome_ok === undefined) ? '_' : r.outcome_ok;
+        s += '\n' + r.id + ',' + ok + ',' + (r.status_label || '');
+      }
+      return s;
+    }
+
+    function visibleRows() {
+      return buildRenderItems()
+        .filter(function (it) { return it.kind === 'row'; })
+        .map(function (it) { return it.row; });
+    }
+
+    function atBottom() {
+      return listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 48;
+    }
+    function scrollToBottom() {
+      suppressScrollUntil = performance.now() + 150;
+      listEl.scrollTop = listEl.scrollHeight;
+    }
+
+    function updateJumpButton() {
+      if (!jumpEl) return;
+      // Only meaningful while live-tailing: it means "you scrolled up,
+      // events are still arriving below". In time-travel (paused) the
+      // cursor controls own navigation, so we hide it.
+      jumpEl.hidden = !(liveMode && !followLatest && rows.length > 0);
+    }
+
+    // Move the green "current" left-rail indicator to the latest visible
+    // row at or before the cursor. Cheap class toggle — no rebuild.
+    function updateCurrentRow() {
+      listEl.querySelectorAll('.tr-row--current').forEach(function (el) {
+        el.classList.remove('tr-row--current');
+      });
+      if (currentIndex < 0) return;
+      const cur = latestVisibleAtOrBefore(currentIndex);
+      if (!cur) return;
+      const li = listEl.querySelector('[data-id="' + CSS.escape(cur.id) + '"]');
+      if (li) li.classList.add('tr-row--current');
+    }
+
+    // Full list rebuild. Preserves the user's scroll position unless we
+    // are live-tailing and stuck to the bottom, in which case we keep the
+    // newest row in view. Selection/expand state survive because
+    // renderRowHtml reads selectedId / expandedId.
+    function doRebuild() {
+      const stick = followLatest && liveMode;
+      const prev = listEl.scrollTop;
+      renderRows();
+      updateCurrentRow();
+      if (stick) scrollToBottom();
+      else { suppressScrollUntil = performance.now() + 150; listEl.scrollTop = prev; }
+      lastStructSig = structSignature();
+    }
+
+    // While live-tailing with the view stuck to the bottom, mirror the
+    // selection/detail onto the newest row so the side panel + topology
+    // narrate the run. Does not steal selection once the user has
+    // scrolled up or clicked a row (followLatest is false then).
+    function followLiveSelection() {
+      if (currentIndex < 0) return;
+      const cur = latestVisibleAtOrBefore(currentIndex);
+      if (cur) selectRow(cur.id, { scroll: false, user: false });
+    }
+
+    async function refresh() {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const r = await fetch('/state/trace.json', { cache: 'no-store' });
+        if (!r.ok) return;
+        const d = await r.json();
+        rows = d.rows || [];
+        const newCurrent = d.current_index;
+        liveMode = !!d.live_mode;
+
+        const ssig = structSignature();
+        const structChanged = ssig !== lastStructSig;
+        const cursorChanged = newCurrent !== currentIndex;
+        if (!structChanged && !cursorChanged) return;  // nothing to do
+        currentIndex = newCurrent;
+
+        if (structChanged) doRebuild();
+        else updateCurrentRow();
+
+        if (liveMode) {
+          // Tail follows the latest row only while stuck to the bottom.
+          if (followLatest) followLiveSelection();
+        } else if (cursorChanged || structChanged) {
+          // Time-travel: the parked cursor row drives the detail/topology
+          // and we bring it into view — explicit user navigation.
+          const cur = latestVisibleAtOrBefore(currentIndex);
+          if (cur) selectRow(cur.id, { scroll: true, user: false });
+        }
+        updateJumpButton();
+      } catch (e) { /* best-effort */ }
+      finally { inFlight = false; }
+    }
+
+    // Filter / turns-toggle change the visible set; rebuild now and let
+    // the next refresh recompute the signature off the rebuilt DOM.
+    function forceRerender() {
+      doRebuild();
+      updateJumpButton();
+    }
+
+    // ---- listeners --------------------------------------------------
+
+    // Scroll governs the live-tail intent (the "stick to bottom" rule).
+    // Ignored briefly after our own programmatic scrolls.
+    listEl.addEventListener('scroll', function () {
+      if (performance.now() < suppressScrollUntil) return;
+      const atB = atBottom();
+      if (atB && !followLatest) {
+        followLatest = true;
+        setExpanded(null);   // back on the tail → no stale open row
+        updateJumpButton();
+        if (liveMode) followLiveSelection();
+      } else if (!atB && followLatest) {
+        followLatest = false;
+        updateJumpButton();
+      }
+    });
+
+    // Single click on a row's header line selects it AND expands it
+    // (accordion: the previously-open row collapses). Clicking the open
+    // row's header again collapses it. Clicks *inside* the expanded
+    // content are left alone so you can select text there.
+    listEl.addEventListener('click', function (e) {
+      if (e.target.closest('.tr-x')) return;   // interacting with open content
+      const li = e.target.closest('li.tr-row');
+      if (!li) return;
+      const id = li.dataset.id;
+      if (!id) return;
+      const reclickOpen = (id === expandedId);
+      selectRow(id, { user: true });
+      if (reclickOpen) setExpanded(null);
+      else setExpanded(id);   // expands (or collapses-all if no detail)
+    });
+
+    listEl.addEventListener('keydown', function (e) {
+      if (!rows.length) return;
+      // Navigate the *visible* rows only — never a hidden LLM-turn row.
+      // Arrowing accordion-expands the landed row, mirroring click.
+      if (e.key === 'j' || e.key === 'ArrowDown' ||
+          e.key === 'k' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const vis = visibleRows();
+        if (!vis.length) return;
+        let i = vis.findIndex(function (r) { return r.id === selectedId; });
+        if (e.key === 'j' || e.key === 'ArrowDown') {
+          i = (i < 0) ? 0 : Math.min(vis.length - 1, i + 1);
+        } else {
+          i = (i < 0) ? vis.length - 1 : Math.max(0, i - 1);
+        }
+        selectRow(vis[i].id, { scroll: true, user: true });
+        setExpanded(vis[i].id);
+      } else if ((e.key === 'Enter' || e.key === ' ') && selectedId) {
+        e.preventDefault();
+        toggleExpanded(selectedId);
+      }
+    });
+
+    if (jumpEl) {
+      jumpEl.addEventListener('click', function () {
+        followLatest = true;
+        setExpanded(null);   // resuming the tail clears any open row
+        scrollToBottom();
+        if (liveMode) followLiveSelection();
+        updateJumpButton();
+      });
+    }
+
+    document.body.addEventListener('topology-node-selected', function (e) {
+      const id = e.detail && e.detail.id;
+      topoFilterNodeId = id || null;
+      forceRerender();
+    });
+
+    if (filterClr) {
+      filterClr.addEventListener('click', function () {
+        topoFilterNodeId = null;
+        document.body.dispatchEvent(
+          new CustomEvent('topology-node-selected', { detail: { id: null } })
+        );
+        forceRerender();
+      });
+    }
+
+    if (turnsToggle) {
+      turnsToggle.addEventListener('change', function () {
+        showTurns = !!turnsToggle.checked;
+        forceRerender();
+      });
+    }
+
+    document.body.addEventListener('cursor-changed', refresh);
+
+    refresh();
+    setInterval(refresh, 400);
+  })();
+
+  // =====================================================================
+  // Resizable panels — two drag handles:
+  //   • split-col : vertical handle between the trace (left) and the
+  //     side column (right) → widen / narrow the graph.
+  //   • split-row : horizontal handle between the graph and the detail
+  //     panel → make the graph taller / shorter.
+  // Sizes are written to CSS custom properties (--side-w / --detail-h)
+  // and persisted in localStorage. After any resize we dispatch a
+  // window 'resize' so the cytoscape graph re-fits (its existing
+  // resize handler calls cy.resize() + fitGraph()).
+  // =====================================================================
+  (function () {
+    const root    = document.documentElement;
+    const layout  = document.querySelector('.layout');
+    const side    = document.querySelector('.side');
+    const splitCol = document.getElementById('split-col');
+    const splitRow = document.getElementById('split-row');
+    if (!layout || !side || !splitCol || !splitRow) return;
+
+    const LS_W = 'anrviz.sideW';
+    const LS_H = 'anrviz.detailH';
+    const DEFAULT_W = 430;
+    const DEFAULT_H = 280;
+
+    function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+    function notifyResize() { window.dispatchEvent(new Event('resize')); }
+
+    function setSideW(px) {
+      const total = layout.clientWidth;
+      const w = clamp(px, 320, Math.max(360, Math.min(total - 380, 1000)));
+      root.style.setProperty('--side-w', w + 'px');
+      return w;
+    }
+    function setDetailH(px) {
+      // Leave room for the topology's min-height (220) + splitter + gaps
+      // so dragging the detail tall never clips the graph.
+      const h = clamp(px, 140, Math.max(160, side.clientHeight - 260));
+      root.style.setProperty('--detail-h', h + 'px');
+      return h;
+    }
+
+    // Restore persisted sizes.
+    const savedW = parseFloat(localStorage.getItem(LS_W));
+    const savedH = parseFloat(localStorage.getItem(LS_H));
+    if (!isNaN(savedW)) setSideW(savedW);
+    if (!isNaN(savedH)) setDetailH(savedH);
+
+    let dragging = null;        // 'col' | 'row'
+    let pending = null;         // last pointer event awaiting a rAF
+    let rafQueued = false;
+
+    function applyDrag() {
+      rafQueued = false;
+      if (!dragging || !pending) return;
+      if (dragging === 'col') {
+        const rect = layout.getBoundingClientRect();
+        const w = setSideW(rect.right - pending.clientX);
+        localStorage.setItem(LS_W, w);
+      } else {
+        const rect = side.getBoundingClientRect();
+        const h = setDetailH(rect.bottom - pending.clientY);
+        localStorage.setItem(LS_H, h);
+      }
+      notifyResize();
+    }
+
+    function onMove(e) {
+      if (!dragging) return;
+      pending = e;
+      if (!rafQueued) { rafQueued = true; requestAnimationFrame(applyDrag); }
+    }
+
+    function startDrag(kind, handle, e) {
+      dragging = kind;
+      handle.classList.add('splitter--dragging');
+      document.body.classList.add('is-resizing');
+      if (kind === 'row') document.body.classList.add('is-resizing-row');
+      try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+      e.preventDefault();
+    }
+    function endDrag() {
+      if (!dragging) return;
+      splitCol.classList.remove('splitter--dragging');
+      splitRow.classList.remove('splitter--dragging');
+      document.body.classList.remove('is-resizing', 'is-resizing-row');
+      dragging = null;
+      pending = null;
+      notifyResize();
+    }
+
+    splitCol.addEventListener('pointerdown', function (e) { startDrag('col', splitCol, e); });
+    splitRow.addEventListener('pointerdown', function (e) { startDrag('row', splitRow, e); });
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
+
+    // Double-click a handle to reset that dimension.
+    splitCol.addEventListener('dblclick', function () {
+      setSideW(DEFAULT_W); localStorage.removeItem(LS_W); notifyResize();
+    });
+    splitRow.addEventListener('dblclick', function () {
+      setDetailH(DEFAULT_H); localStorage.removeItem(LS_H); notifyResize();
+    });
+
+    // Keyboard a11y: arrow keys nudge the focused handle.
+    splitCol.addEventListener('keydown', function (e) {
+      const cur = parseFloat(getComputedStyle(root).getPropertyValue('--side-w')) || DEFAULT_W;
+      if (e.key === 'ArrowLeft')  { localStorage.setItem(LS_W, setSideW(cur - 24)); notifyResize(); e.preventDefault(); }
+      if (e.key === 'ArrowRight') { localStorage.setItem(LS_W, setSideW(cur + 24)); notifyResize(); e.preventDefault(); }
+    });
+    splitRow.addEventListener('keydown', function (e) {
+      const cur = parseFloat(getComputedStyle(root).getPropertyValue('--detail-h')) || DEFAULT_H;
+      if (e.key === 'ArrowUp')   { localStorage.setItem(LS_H, setDetailH(cur + 24)); notifyResize(); e.preventDefault(); }
+      if (e.key === 'ArrowDown') { localStorage.setItem(LS_H, setDetailH(cur - 24)); notifyResize(); e.preventDefault(); }
+    });
+  })();
+
+  // =====================================================================
+  // Time controls — small server-rendered fragment, fetched without HTMX
+  // =====================================================================
+  (function () {
+    const ctrlEl = document.getElementById('ctrl');
+    if (!ctrlEl) return;
+    let inFlight = false;
+
+    async function refresh() {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const r = await fetch('/state/controls', { cache: 'no-store' });
+        if (r.ok) ctrlEl.innerHTML = await r.text();
+      } catch (e) {
+        // best-effort
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    ctrlEl.addEventListener('click', function (e) {
+      const btn = e.target.closest('[data-cursor-op]');
+      if (!btn || btn.disabled) return;
+      const op = btn.getAttribute('data-cursor-op');
+      fetch('/control/cursor?op=' + encodeURIComponent(op), { cache: 'no-store' })
+        .then(function () {
+          document.body.dispatchEvent(new CustomEvent('cursor-changed'));
+          refresh();
+        });
+    });
+
+    refresh();
+    setInterval(refresh, 500);
+    document.body.addEventListener('cursor-changed', refresh);
+  })();
+
+  // =====================================================================
+  // Sidebar — compact rows by default, click to expand for debug detail
+  // =====================================================================
+  (function () {
+    const totalsEl = document.getElementById('totals');
+    const eventsEl = document.getElementById('events');
+
+    // Persistent state across re-renders
+    const openIds = new Set();          // event ids whose detail is expanded
+    let lastEventsSig = null;
+    let inFlight = false;
+
+    function escHtml(s) {
+      if (s === null || s === undefined) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function fmtUsd(n) { return '$ ' + (n || 0).toFixed(3); }
+    function fmtSec(n) { return (n || 0).toFixed(1) + 's'; }
+    function fmtEventTime(ev) {
+      const tsAbs = new Date(ev.ts * 1000).toLocaleTimeString();
+      return '+' + (ev.ts_offset || 0).toFixed(2) + 's · ' + tsAbs;
+    }
+
+    function renderTotals(t) {
+      if (!t) { totalsEl.innerHTML = ''; return; }
+      totalsEl.innerHTML =
+        '<span>tool: ' + (t.tool_calls || 0) + '</span>' +
+        '<span>llm: ' + (t.llm_calls || 0) + '</span>' +
+        '<span>' + fmtUsd(t.cost_usd) + '</span>' +
+        '<span>' + fmtSec(t.elapsed_sec) + '</span>';
+    }
+
+    function eventsSignature(events) {
+      // Newest-first list of stable ids — re-render only when the set changes.
+      return events.map(function (e) { return e.id; }).join(',');
+    }
+
+    function buildHead(ev) {
+      const inst = ev.instance_short
+        ? '<span class="ev__inst">#' + escHtml(ev.instance_short) + '</span>' : '';
+      const caret = ev.has_detail
+        ? '<span class="ev__caret">▸</span>'
+        : '<span class="ev__caret ev__caret--off"></span>';
+
+      // Status pip: ✓ / ✗ at the right end of the head line.
+      let pip = '';
+      if (ev.outcome_ok === false) {
+        pip = '<span class="ev__pip ev__pip--bad" title="failed">✗</span>';
+      } else if (ev.outcome_ok === true) {
+        pip = '<span class="ev__pip ev__pip--ok" title="ok">✓</span>';
+      }
+
+      const head =
+        '<div class="ev__head">' +
+          caret +
+          '<span class="ev__agent">' + escHtml(ev.agent) + inst + '</span>' +
+          '<span class="ev__verb">' + escHtml(ev.verb || ev.kind) + '</span>' +
+          pip +
+        '</div>';
+
+      // Sub-line: arg → result (compact). Only emit when there's
+      // something useful — otherwise the row is a single line.
+      const hasArg = !!ev.arg_preview;
+      const outClass = ev.outcome_ok === false ? 'ev__out ev__out--bad' : 'ev__out';
+      const outBlock = ev.outcome_preview
+        ? '<span class="' + outClass + '" title="' + escHtml(ev.outcome_preview) +
+          '">→ ' + escHtml(ev.outcome_preview) + '</span>'
+        : '';
+      const argBlock = hasArg
+        ? '<span class="ev__arg" title="' + escHtml(ev.arg_preview) + '">' +
+          escHtml(ev.arg_preview) + '</span>'
+        : '';
+      const sub = (hasArg || ev.outcome_preview)
+        ? '<div class="ev__sub">' + argBlock + outBlock + '</div>'
+        : '';
+
+      return head + sub;
+    }
+
+    function previewValue(v) {
+      if (v === null || v === undefined) return '—';
+      if (typeof v === 'string') return v.length > 120 ? v.slice(0, 119) + '…' : v;
+      if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+      if (Array.isArray(v)) return v.length + (v.length === 1 ? ' item' : ' items');
+      if (typeof v === 'object') {
+        const n = Object.keys(v).length;
+        return n + (n === 1 ? ' field' : ' fields');
+      }
+      return String(v);
+    }
+
+    function kvPreview(obj) {
+      const entries = Object.entries(obj || {});
+      if (!entries.length) return '<div class="ev__empty">No fields.</div>';
+      const maxRows = 5;
+      const rows = entries.slice(0, maxRows).map(function ([k, v]) {
+        return '<div class="ev__kv-row">' +
+          '<span class="ev__kv-key">' + escHtml(k) + '</span>' +
+          '<span class="ev__kv-val">' + escHtml(previewValue(v)) + '</span>' +
+        '</div>';
+      }).join('');
+      const more = entries.length > maxRows
+        ? '<div class="ev__kv-more">+' + (entries.length - maxRows) + ' more</div>'
+        : '';
+      return '<div class="ev__kv">' + rows + more + '</div>';
+    }
+
+    function textPreview(text, bad) {
+      const cls = 'ev__text-preview' + (bad ? ' ev__text-preview--bad' : '');
+      return '<div class="' + cls + '">' + escHtml(String(text || '')) + '</div>';
+    }
+
+    function fieldBlock(label, bodyHtml) {
+      return (
+        '<div class="ev__d-row ev__d-row--field">' +
+          '<div class="ev__d-topline">' +
+            '<span class="ev__d-key">' + escHtml(label) + '</span>' +
+          '</div>' +
+          bodyHtml +
+        '</div>'
+      );
+    }
+
+    function eventStatus(ev) {
+      if (ev.outcome_ok === true) return 'ok';
+      if (ev.outcome_ok === false) return ev.kind === 'tool_error' ? 'error' : 'refused';
+      return ev.kind || 'event';
+    }
+
+    function eventTitle(ev) {
+      return ev ? (ev.agent + ' · ' + (ev.verb || ev.kind)) : 'event';
+    }
+
+    function jsonText(value) {
+      return JSON.stringify(value || {}, null, 2);
+    }
+
+    function eventRawText(ev) {
+      return jsonText(ev ? ev.raw : {});
+    }
+
+    function eventSummarySections(ev) {
+      if (!ev) return '';
+      const rows = [
+        ['agent', ev.agent],
+        ['action', ev.verb || ev.kind],
+        ['status', eventStatus(ev)],
+        ['time', fmtEventTime(ev)],
+      ];
+      if (ev.instance_id) rows.push(['instance', ev.instance_id]);
+      if (ev.extras && ev.extras.parent_instance_id) {
+        rows.push(['parent', ev.extras.parent_instance_id]);
+      }
+      let html = '<section class="event-modal__section">' +
+        '<div class="event-modal__label">Overview</div>' +
+        '<div class="event-modal__grid">' +
+        rows.map(function (row) {
+          return '<div class="event-modal__item"><span>' + escHtml(row[0]) +
+            '</span><strong>' + escHtml(row[1] || '—') + '</strong></div>';
+        }).join('') +
+        '</div></section>';
+
+      if (ev.args && Object.keys(ev.args).length) {
+        html += '<section class="event-modal__section">' +
+          '<div class="event-modal__label">Args</div>' +
+          '<pre class="event-modal__json">' + jsonHtml(jsonText(ev.args)) + '</pre>' +
+          '</section>';
+      }
+      if (ev.outcome_full) {
+        const label = ev.outcome_ok === false
+          ? (ev.kind === 'tool_error' ? 'Error' : 'Refusal')
+          : 'Result';
+        html += '<section class="event-modal__section">' +
+          '<div class="event-modal__label">' + label + '</div>' +
+          '<pre class="event-modal__text">' + escHtml(ev.outcome_full) + '</pre>' +
+          '</section>';
+      }
+      if (ev.extras) {
+        const extraRows = [];
+        if (ev.extras.checkpoint_id || ev.extras.pattern) {
+          extraRows.push(['hitl', [
+            ev.extras.checkpoint_id,
+            ev.extras.pattern,
+            ev.extras.decision,
+          ].filter(Boolean).join(' · ')]);
+        }
+        if (ev.extras.change) extraRows.push(['reshape', ev.extras.change]);
+        if (ev.extras.model || ev.extras.turn) {
+          extraRows.push(['turn', [
+            ev.extras.model,
+            ev.extras.turn ? 'turn ' + ev.extras.turn : '',
+          ].filter(Boolean).join(' · ')]);
+        }
+        if (ev.extras.requested_tools && ev.extras.requested_tools.length) {
+          extraRows.push(['requested tools', ev.extras.requested_tools.join(', ')]);
+        }
+        if (extraRows.length) {
+          html += '<section class="event-modal__section">' +
+            '<div class="event-modal__label">Metadata</div>' +
+            '<div class="event-modal__grid">' +
+            extraRows.map(function (row) {
+              return '<div class="event-modal__item"><span>' + escHtml(row[0]) +
+                '</span><strong>' + escHtml(row[1]) + '</strong></div>';
+            }).join('') +
+            '</div></section>';
+        }
+      }
+      return html;
+    }
+
+    function buildDetail(ev) {
+      if (ev.detail_error) {
+        return '<div class="ev__detail"><div class="ev__d-row">' +
+          '<span class="ev__d-key">detail</span>' +
+          '<span class="ev__d-msg ev__d-msg--bad">' + escHtml(ev.detail_error) +
+          '</span></div></div>';
+      }
+      if (!ev.detail_loaded) {
+        return '<div class="ev__detail"><div class="ev__d-row">' +
+          '<span class="ev__d-key">detail</span>' +
+          '<span class="ev__d-msg">loading…</span></div></div>';
+      }
+      const rows = [];
+      const meta = '<div class="ev__detail-meta">' +
+        '<span>' + escHtml(fmtEventTime(ev)) + '</span>' +
+        (ev.instance_id ? '<span>' + escHtml(ev.instance_id) + '</span>' : '') +
+        '<button class="ev__view-full ev__view-event" data-view-event="' +
+        escHtml(ev.id) + '">view</button>' +
+        '</div>';
+      if (ev.args && Object.keys(ev.args).length) {
+        rows.push(fieldBlock('args', kvPreview(ev.args)));
+      }
+      if (ev.outcome_full) {
+        const label = ev.outcome_ok === false
+          ? (ev.kind === 'tool_error' ? 'error' : 'refused')
+          : 'result';
+        rows.push(fieldBlock(label, textPreview(ev.outcome_full, ev.outcome_ok === false)));
+      }
+      if (ev.extras) {
+        const e = ev.extras;
+        if (e.checkpoint_id || e.pattern) {
+          rows.push(
+            fieldBlock('hitl', '<div class="ev__pill-row">' +
+              (e.checkpoint_id ? '<span>' + escHtml(e.checkpoint_id) + '</span>' : '') +
+              (e.pattern ? '<span>' + escHtml(e.pattern) + '</span>' : '') +
+              (e.decision ? '<span>' + escHtml(e.decision) + '</span>' : '') +
+              '</div>')
+          );
+        }
+        if (e.change) {
+          rows.push(fieldBlock('reshape', textPreview(e.change)));
+        }
+        if (e.model || e.turn) {
+          rows.push(
+            fieldBlock('agent turn', '<div class="ev__pill-row">' +
+              (e.turn ? '<span>turn ' + escHtml(e.turn) + '</span>' : '') +
+              (e.model ? '<span>' + escHtml(e.model) + '</span>' : '') +
+              '</div>')
+          );
+        }
+        if (e.requested_tools && e.requested_tools.length) {
+          rows.push(
+            fieldBlock('requested tools', '<div class="ev__pill-row">' +
+              e.requested_tools.map(function (t) {
+                return '<span>' + escHtml(t) + '</span>';
+              }).join('') + '</div>')
+          );
+        }
+        if (e.parent_instance_id) {
+          rows.push(
+            fieldBlock('parent', '<div class="ev__pill-row"><span>' +
+              escHtml(e.parent_instance_id) + '</span>' +
+              (e.delegation_depth ? '<span>depth ' + e.delegation_depth + '</span>' : '') +
+              '</div>')
+          );
+        }
+      }
+      return '<div class="ev__detail">' + meta + rows.join('') + '</div>';
+    }
+
+    function renderEvents(events, currentIndex) {
+      // Server returns oldest→newest; show newest at top.
+      const ordered = events.slice().reverse();
+      const html = [];
+      for (const ev of ordered) {
+        const detail = detailCache.get(ev.id);
+        const merged = detail ? Object.assign({}, ev, detail) : ev;
+        const isOpen = openIds.has(ev.id);
+        const isCurrent = ev.index === currentIndex;
+        const cls = 'ev ev--' + escHtml(ev.kind) +
+          (isOpen ? ' ev--open' : '') +
+          (isCurrent ? ' ev--current' : '') +
+          (!ev.has_detail ? ' ev--flat' : '');
+        html.push(
+          '<li class="' + cls + '" data-id="' + escHtml(ev.id) +
+          '" data-index="' + (ev.index ?? '') + '">' +
+          buildHead(merged) +
+          (isOpen ? buildDetail(merged) : '') +
+          '</li>'
+        );
+      }
+      eventsEl.innerHTML = html.join('');
+    }
+
+    // ---- Modal ---------------------------------------------------
+    const modalEl = document.getElementById('modal');
+    const modalTitleEl = document.getElementById('modal-title');
+    const modalBodyEl = document.getElementById('modal-body');
+    const modalTabsEl = document.getElementById('modal-tabs');
+    let activeModalEvent = null;
+    let activeModalMode = 'summary';
+
+    function jsonHtml(text) {
+      let pretty;
+      try {
+        pretty = JSON.stringify(JSON.parse(text), null, 2);
+      } catch (e) {
+        return escHtml(text);
+      }
+      return escHtml(pretty).replace(
+        /(&quot;(?:\\.|[^\\])*?&quot;)(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g,
+        function (match, str, colon) {
+          if (str) {
+            const cls = colon ? 'json-key' : 'json-string';
+            return '<span class="' + cls + '">' + str + '</span>' + (colon || '');
+          }
+          if (match === 'true' || match === 'false') {
+            return '<span class="json-bool">' + match + '</span>';
+          }
+          if (match === 'null') {
+            return '<span class="json-null">null</span>';
+          }
+          return '<span class="json-number">' + match + '</span>';
+        }
+      );
+    }
+
+    function updateModalTabs() {
+      if (!modalTabsEl) return;
+      modalTabsEl.hidden = !activeModalEvent;
+      modalTabsEl.querySelectorAll('[data-modal-mode]').forEach(function (btn) {
+        btn.classList.toggle(
+          'modal__tab--active',
+          btn.getAttribute('data-modal-mode') === activeModalMode
+        );
+      });
+    }
+
+    function renderEventModal() {
+      if (!activeModalEvent) return;
+      modalTitleEl.textContent = eventTitle(activeModalEvent);
+      updateModalTabs();
+      if (activeModalMode === 'raw') {
+        modalBodyEl.className = 'modal__body modal__body--json';
+        modalBodyEl.innerHTML = jsonHtml(eventRawText(activeModalEvent));
+      } else {
+        modalBodyEl.className = 'modal__body modal__body--event';
+        modalBodyEl.innerHTML = eventSummarySections(activeModalEvent);
+      }
+    }
+
+    function showEventModal(ev) {
+      activeModalEvent = ev;
+      activeModalMode = 'summary';
+      renderEventModal();
+      modalEl.hidden = false;
+      const panel = modalEl.querySelector('.modal__panel');
+      if (panel) panel.focus();
+    }
+    function hideModal() {
+      modalEl.hidden = true;
+      activeModalEvent = null;
+      updateModalTabs();
+    }
+
+    modalEl.addEventListener('click', function (e) {
+      if (e.target.dataset && 'modalClose' in e.target.dataset) hideModal();
+    });
+    if (modalTabsEl) {
+      modalTabsEl.addEventListener('click', function (e) {
+        const btn = e.target.closest('[data-modal-mode]');
+        if (!btn || !activeModalEvent) return;
+        activeModalMode = btn.getAttribute('data-modal-mode') || 'summary';
+        renderEventModal();
+      });
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !modalEl.hidden) hideModal();
+    });
+
+    // Summary box (LLM-narrated)
+    const summaryEl = document.getElementById('summary');
+    const summaryTextEl = document.getElementById('summary-text');
+    const summaryGenerateEl = document.getElementById('summary-generate');
+    const summaryCloseEl = document.getElementById('summary-close');
+    let summaryReqToken = 0;
+    let activeSummaryEventId = null;
+
+    function showSummary(text, canGenerate) {
+      summaryTextEl.textContent = text;
+      summaryGenerateEl.hidden = !canGenerate;
+      summaryEl.hidden = false;
+    }
+    function hideSummary() { summaryEl.hidden = true; }
+    summaryCloseEl.addEventListener('click', hideSummary);
+    summaryGenerateEl.addEventListener('click', function () {
+      if (activeSummaryEventId) fetchSummary(activeSummaryEventId, true);
+    });
+
+    async function fetchSummary(eventId, generate) {
+      activeSummaryEventId = eventId;
+      const myToken = ++summaryReqToken;
+      if (generate) showSummary('…thinking…', false);
+      try {
+        const url = '/state/summary?id=' + encodeURIComponent(eventId) +
+          (generate ? '&generate=true' : '');
+        const r = await fetch(url, { cache: 'no-store' });
+        if (myToken !== summaryReqToken) return; // a newer click superseded this
+        if (!r.ok) { showSummary('(no summary available)', false); return; }
+        const d = await r.json();
+        if (d.cached === false) {
+          showSummary('No cached summary for this step.', true);
+          return;
+        }
+        showSummary(d.summary || '(no summary)', false);
+      } catch (e) {
+        if (myToken === summaryReqToken) showSummary('(summary error)', false);
+      }
+    }
+
+    async function ensureDetail(id) {
+      if (detailCache.has(id)) return;
+      detailCache.set(id, { detail_loaded: false });
+      scheduleRerender();
+      try {
+        const r = await fetch('/state/event?id=' + encodeURIComponent(id),
+                              { cache: 'no-store' });
+        if (!r.ok) throw new Error('could not load detail');
+        const detail = await r.json();
+        detail.detail_loaded = true;
+        detailCache.set(id, detail);
+      } catch (e) {
+        detailCache.set(id, {
+          detail_loaded: true,
+          detail_error: e.message || 'could not load detail',
+        });
+      }
+      scheduleRerender();
+    }
+
+    function gotoIndex(index) {
+      fetch('/control/cursor?op=goto&index=' + index, { cache: 'no-store' })
+        .then(function () {
+          document.body.dispatchEvent(new CustomEvent('cursor-changed'));
+        });
+    }
+
+    eventsEl.addEventListener('click', function (e) {
+      const viewBtn = e.target.closest('[data-view-event]');
+      if (viewBtn) {
+        const id = viewBtn.getAttribute('data-view-event');
+        const base = cachedEvents.find(function (x) { return x.id === id; });
+        const detail = detailCache.get(id);
+        const ev = detail ? Object.assign({}, base, detail) : base;
+        if (ev) showEventModal(ev);
+        e.stopPropagation();
+        return;
+      }
+      const li = e.target.closest('li.ev');
+      if (!li) return;
+      if (li.classList.contains('ev--flat')) return;
+      const id = li.dataset.id;
+      if (openIds.has(id)) {
+        openIds.delete(id);
+      } else {
+        openIds.add(id);
+        ensureDetail(id);
+      }
+      scheduleRerender();
+      // Jump the graph cursor to this step. The cursor-change event
+      // will trigger the sidebar refresh, which in turn pulls the
+      // summary for the new current index.
+      const ev = cachedEvents.find(function (x) { return x.id === id; });
+      if (ev && typeof ev.index === 'number') gotoIndex(ev.index);
+    });
+
+    let cachedEvents = [];
+    const detailCache = new Map();
+    let lastCurrentIndex = -1;
+    let lastSummaryEventId = null;
+    function scheduleRerender() { renderEvents(cachedEvents, lastCurrentIndex); }
+
+    async function refresh() {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const r = await fetch('/state/sidebar.json', { cache: 'no-store' });
+        if (!r.ok) return;
+        const data = await r.json();
+        renderTotals(data.totals);
+        const events = data.events || [];
+        const sig = eventsSignature(events) + '|' +
+          data.current_index + '|' + (data.live_mode ? 'L' : 'P');
+        cachedEvents = events;
+        const present = new Set(events.map(function (e) { return e.id; }));
+        for (const id of Array.from(openIds)) {
+          if (!present.has(id)) openIds.delete(id);
+        }
+        for (const id of Array.from(detailCache.keys())) {
+          if (!present.has(id)) detailCache.delete(id);
+        }
+        const currentIndexChanged = data.current_index !== lastCurrentIndex;
+        lastCurrentIndex = data.current_index;
+        // Auto-focus: when the cursor moves, expand only the current
+        // step's detail and collapse everything else. This makes the
+        // detail panel a "what's happening now" view that updates as
+        // you scrub. Manual collapse on the current row is preserved
+        // — we only reset openIds when the cursor actually changed.
+        if (currentIndexChanged && data.current_index >= 0) {
+          openIds.clear();
+          const cur = events[data.current_index];
+          if (cur && cur.has_detail) {
+            openIds.add(cur.id);
+            ensureDetail(cur.id);
+          }
+        }
+        if (sig !== lastEventsSig) {
+          renderEvents(events, data.current_index);
+          lastEventsSig = sig;
+          if (currentIndexChanged) {
+            const el = eventsEl.querySelector('li.ev--current');
+            if (el) el.scrollIntoView({ block: 'nearest' });
+          }
+        }
+        // Pull the summary for the current cursor position whenever
+        // it shifts. Summaries are cached server-side, so re-clicking
+        // doesn't pay the LLM cost twice.
+        if (currentIndexChanged && data.current_index >= 0) {
+          const cur = events[data.current_index];
+          if (cur && cur.id !== lastSummaryEventId) {
+            lastSummaryEventId = cur.id;
+            fetchSummary(cur.id, false);
+          }
+        }
+      } catch (e) {
+        // best-effort
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 400);
+    document.body.addEventListener('cursor-changed', refresh);
+  })();
+
+  // =====================================================================
+  // Node inspector — click any graph node to see its spec config.
+  // =====================================================================
+  (function () {
+    const inspectorEl = document.getElementById('inspector');
+    const titleEl = document.getElementById('inspector-title');
+    const subtitleEl = document.getElementById('inspector-subtitle');
+    const bodyEl = document.getElementById('inspector-body');
+
+    function escHtml(s) {
+      if (s === null || s === undefined) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function close() { inspectorEl.hidden = true; }
+
+    function renderSection(s) {
+      const label = '<div class="ins__label">' + escHtml(s.label) + '</div>';
+      let val = '';
+      if (s.kind === 'list') {
+        const tags = (s.value || []).map(function (v) {
+          return '<span class="ins__tag">' + escHtml(v) + '</span>';
+        }).join('');
+        val = '<div class="ins__tags">' + tags + '</div>';
+      } else if (s.kind === 'code') {
+        val = '<pre class="ins__pre">' + escHtml(s.value || '') + '</pre>';
+      } else if (s.kind === 'json') {
+        let txt;
+        try { txt = JSON.stringify(s.value, null, 2); }
+        catch (e) { txt = String(s.value); }
+        val = '<pre class="ins__pre">' + escHtml(txt) + '</pre>';
+      } else if (s.kind === 'table') {
+        const rows = (s.value || []).map(function (row) {
+          const cells = Object.keys(row).map(function (k) {
+            const v = row[k];
+            const vs = (typeof v === 'object' && v !== null)
+              ? JSON.stringify(v) : String(v);
+            return '<dt>' + escHtml(k) + '</dt><dd>' + escHtml(vs) + '</dd>';
+          }).join('');
+          return '<dl class="ins__row-dl">' + cells + '</dl>';
+        }).join('');
+        val = '<div class="ins__table">' + rows + '</div>';
+      } else {
+        val = '<div class="ins__text">' + escHtml(s.value || '') + '</div>';
+      }
+      return '<section class="ins__section">' + label + val + '</section>';
+    }
+
+    function render(info) {
+      titleEl.textContent = info.title || '';
+      subtitleEl.textContent = info.subtitle || '';
+      const sections = (info.sections || []).map(renderSection).join('');
+      bodyEl.innerHTML = sections ||
+        '<div class="ins__empty">No additional config.</div>';
+      inspectorEl.hidden = false;
+      const panel = inspectorEl.querySelector('.modal__panel');
+      if (panel) panel.focus();
+    }
+
+    async function open(nodeId) {
+      titleEl.textContent = nodeId;
+      subtitleEl.textContent = '';
+      bodyEl.innerHTML = '<div class="ins__empty">…loading…</div>';
+      inspectorEl.hidden = false;
+      try {
+        const r = await fetch('/state/node?id=' + encodeURIComponent(nodeId),
+                              { cache: 'no-store' });
+        if (!r.ok) {
+          bodyEl.innerHTML =
+            '<div class="ins__empty">Could not load node config.</div>';
+          return;
+        }
+        const info = await r.json();
+        render(info);
+      } catch (e) {
+        bodyEl.innerHTML =
+          '<div class="ins__empty">Error: ' + escHtml(e.message) + '</div>';
+      }
+    }
+
+    inspectorEl.addEventListener('click', function (e) {
+      if (e.target.dataset && 'inspectorClose' in e.target.dataset) close();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !inspectorEl.hidden) close();
+    });
+
+    window.openInspector = open;
+  })();
+
+  // =====================================================================
+  // HITL — bridge to runtime via /state/hitl + /control/hitl/decide
+  // =====================================================================
+  (function () {
+    const bannerEl    = document.getElementById('hitl-banner');
+    const bannerTxt   = document.getElementById('hitl-banner-text');
+    const bannerBtn   = document.getElementById('hitl-banner-review');
+    const modalEl     = document.getElementById('hitl-modal');
+    const subtitleEl  = document.getElementById('hitl-subtitle');
+    const bodyEl      = document.getElementById('hitl-body');
+
+    let pending = [];           // raw req payloads from /state/hitl
+    let activeId = null;        // request currently shown in the modal
+    let lastSig = '';           // signature of last-seen pending list
+    let submitting = false;
+
+    function escHtml(s) {
+      if (s === null || s === undefined) return '';
+      return String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function close() {
+      modalEl.hidden = true;
+      activeId = null;
+    }
+
+    function renderModal(req) {
+      activeId = req.id;
+      subtitleEl.textContent =
+        req.checkpoint_id + '  (' + req.pattern + ')  ·  ' +
+        req.caller + ' → ' + req.tool;
+      const args = req.args || {};
+      const argsJson = JSON.stringify(args, null, 2);
+      const extra = req.extra
+        ? '<div class="hitl__field"><div class="hitl__label">context</div>' +
+          '<div class="hitl__text">' + escHtml(req.extra) + '</div></div>'
+        : '';
+      bodyEl.innerHTML =
+        '<div class="hitl__prompt">' + escHtml(req.prompt_text || '') + '</div>' +
+
+        '<div class="hitl__field">' +
+          '<div class="hitl__label">tool call</div>' +
+          '<textarea class="hitl__textarea" id="hitl-args" spellcheck="false">' +
+          escHtml(argsJson) + '</textarea>' +
+          '<div class="hitl__error" id="hitl-error" hidden></div>' +
+        '</div>' +
+
+        extra +
+
+        '<div class="hitl__field hitl__note-field">' +
+          '<div class="hitl__label">note (optional, sent with reject / modify)</div>' +
+          '<input id="hitl-note" class="hitl__input" type="text" placeholder="…"/>' +
+        '</div>' +
+
+        '<div class="hitl__actions">' +
+          '<button class="hitl__btn hitl__btn--reject" data-act="reject">reject</button>' +
+          '<button class="hitl__btn hitl__btn--modify" data-act="modify">modify</button>' +
+          '<button class="hitl__btn hitl__btn--approve" data-act="approve">approve</button>' +
+        '</div>';
+      modalEl.hidden = false;
+      const panel = modalEl.querySelector('.modal__panel');
+      if (panel) panel.focus();
+      const argsEl = document.getElementById('hitl-args');
+      if (argsEl) argsEl.addEventListener('input', validateArgs);
+    }
+
+    function setSubmitting(on) {
+      submitting = on;
+      bodyEl.querySelectorAll('[data-act]').forEach(function (btn) {
+        btn.disabled = on;
+      });
+    }
+
+    function setHitlError(text) {
+      const errEl = document.getElementById('hitl-error');
+      if (!errEl) return;
+      errEl.textContent = text || '';
+      errEl.hidden = !text;
+    }
+
+    function validateArgs() {
+      const argsEl = document.getElementById('hitl-args');
+      if (!argsEl) return false;
+      try {
+        const parsed = JSON.parse(argsEl.value);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          setHitlError('modified args must be a JSON object');
+          return false;
+        }
+        setHitlError('');
+        return true;
+      } catch (e) {
+        setHitlError('args are not valid JSON: ' + e.message);
+        return false;
+      }
+    }
+
+    async function decide(action) {
+      if (!activeId || submitting) return;
+      const noteEl = document.getElementById('hitl-note');
+      const note = noteEl ? noteEl.value : '';
+      let modifiedArgs = null;
+      if (action === 'modify') {
+        const argsEl = document.getElementById('hitl-args');
+        if (!validateArgs()) return;
+        modifiedArgs = JSON.parse(argsEl ? argsEl.value : '{}');
+      }
+      const id = activeId;
+      const url = '/control/hitl/decide?id=' + encodeURIComponent(id);
+      try {
+        setSubmitting(true);
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: action, note: note, modified_args: modifiedArgs }),
+        });
+        if (!r.ok) {
+          const t = await r.text();
+          setHitlError('decision rejected: ' + t);
+          return;
+        }
+        // Optimistically drop the request locally so the banner clears
+        // immediately — the next poll will reconcile.
+        pending = pending.filter(function (p) { return p.id !== id; });
+        close();
+        renderBanner();
+      } catch (e) {
+        setHitlError('network error: ' + e.message);
+      } finally {
+        setSubmitting(false);
+      }
+    }
+
+    bodyEl.addEventListener('click', function (e) {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      const act = btn.getAttribute('data-act');
+      decide(act);
+    });
+
+    modalEl.addEventListener('click', function (e) {
+      if (e.target.dataset && 'hitlClose' in e.target.dataset) close();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && !modalEl.hidden) close();
+    });
+
+    bannerBtn.addEventListener('click', function () {
+      if (pending.length) renderModal(pending[0]);
+    });
+
+    function renderBanner() {
+      if (!pending.length) {
+        bannerEl.hidden = true;
+        return;
+      }
+      const head = pending[0];
+      const more = pending.length > 1 ? '  (+' + (pending.length - 1) + ' more)' : '';
+      bannerTxt.textContent =
+        head.caller + ' is asking for human review on ' + head.tool + more;
+      bannerEl.hidden = false;
+    }
+
+    async function poll() {
+      try {
+        const r = await fetch('/state/hitl', { cache: 'no-store' });
+        if (!r.ok) return;
+        const d = await r.json();
+        pending = d.pending || [];
+        const sig = pending.map(function (p) { return p.id; }).join(',');
+        if (sig !== lastSig) {
+          lastSig = sig;
+          renderBanner();
+          // If the modal is open on a request that's no longer pending
+          // (e.g. operator decided in another tab, or the runtime
+          // crashed), close it so we don't leave a stale dialog.
+          if (activeId && !pending.find(function (p) { return p.id === activeId; })) {
+            close();
+          }
+          // Auto-pop the first pending request when one shows up and no
+          // modal is currently open. Operators expect HITL to interrupt;
+          // the banner alone is too easy to miss.
+          if (pending.length && modalEl.hidden) {
+            renderModal(pending[0]);
+          }
+        }
+      } catch (e) { /* best-effort */ }
+    }
+
+    poll();
+    setInterval(poll, 1000);
+  })();
+  </script>
+</body>
+</html>

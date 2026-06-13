@@ -1,0 +1,404 @@
+# Cross-organizational supply chain (paper §6.2) — agent-native procurement.
+#
+# A four-agent application (one of which is a kind=script sovereignty
+# guardrail) plus a runtime-instantiable supplier_negotiator template.
+# A procurement_director surveys inventory, delegates per-component
+# sourcing to a procurement agent, and produces an award recommendation.
+#
+# The §6.2 sovereignty story is realised concretely:
+#
+#   - `read_supplier_offer` is declared as an ingress-boundary tool.
+#     The mesh inspects retrieved supplier text before it reaches the
+#     agent, modelling prompt-injection filtering on inbound content.
+#   - `send_supplier_message` is declared as an egress-boundary tool.
+#     The mesh applies `envelope.boundary_policies` before the message
+#     can leave the application, producing allow / block / sanitize /
+#     escalate audit decisions.
+#   - The comms_guardrail remains as a kind=script preflight reviewer:
+#     it gives the LLM a deterministic reformulation loop, while the
+#     mesh is the load-bearing enforcement boundary.
+#
+# Exercises:
+#   - Hybrid orchestrator with deterministic shortcut routes
+#   - Native + Script agent kinds in the same mesh
+#   - R4 (supplier_negotiator template, mandatory HITL on instantiate)
+#   - R2 (analytics may acquire send_supplier_message in unusual cases)
+#   - All four §3.2.2 HITL patterns
+#
+# Caveats: ANR is single-process. The paper's §6.2 cross-org A2A
+# semantics are stand-in only — send_supplier_message records to a
+# local outbound log. The supplier "agents" do not actually exist;
+# their counter-offers are part of the brief the human supplies.
+
+application:
+  name: supply-chain
+  version: "0.1"
+  description: "Procurement with a deterministic Python guardrail beside LLM agents; ingress/egress boundary policies and HITL on large commitments. Best with ANR_HITL=ui."
+  example_task: >-
+    Run this quarter's procurement cycle: full inventory survey, market
+    read on flagged components, source the controller_board_v3 (target
+    ~10,000 units). Meridian, a newly discovered supplier, has proposed a
+    36-month exclusive — handle it appropriately. Produce an award
+    recommendation.
+
+# ---------------------------------------------------------------------------
+# Application structure
+# ---------------------------------------------------------------------------
+
+data_sources:
+  - name: suppliers
+    kind: local_directory
+    path: ./data/suppliers
+    description: "Standing supplier offers (one markdown file per supplier)."
+    content_type: text/markdown
+
+  - name: inventory
+    kind: local_directory
+    path: ./data/inventory
+    description: "Internal inventory snapshot + analyst market signals (JSON)."
+    content_type: application/json
+    sensitivity: confidential
+    tags: [inventory, sovereignty]
+
+  - name: awards
+    kind: local_directory
+    path: ./output/awards
+    description: "Final award recommendations written by procurement."
+    content_type: text/markdown
+
+tools:
+  - name: list_suppliers
+    kind: mcp
+    description: "List supplier id, vendor name, component coverage, headline."
+    remote_name: list_suppliers
+    binds_to: suppliers
+    server: &procurement_server
+      command: python
+      args: ["-m", "mcp_servers.procurement_server"]
+
+  - name: read_supplier_offer
+    kind: mcp
+    boundary: ingress
+    description: "Read the full markdown standing offer for one supplier."
+    remote_name: read_supplier_offer
+    binds_to: suppliers
+    server: *procurement_server
+
+  - name: read_inventory
+    kind: mcp
+    description: "Read current stock + reorder threshold + weeks-of-cover for one component."
+    remote_name: read_inventory
+    binds_to: inventory
+    server: *procurement_server
+
+  - name: read_market_signal
+    kind: mcp
+    description: "Read the analyst market snapshot (price trend, supply risk) for one component."
+    remote_name: read_market_signal
+    binds_to: inventory
+    server: *procurement_server
+
+  - name: send_supplier_message
+    kind: mcp
+    boundary: egress
+    description: "Send an outbound message to a supplier (cross-boundary). Mesh boundary policies inspect the outbound text before transmission."
+    remote_name: send_supplier_message
+    server: *procurement_server
+
+  - name: commit_purchase
+    kind: mcp
+    description: "Commit a purchase. Conditional HITL above $50,000."
+    remote_name: commit_purchase
+    server: *procurement_server
+
+  - name: finalize_contract
+    kind: mcp
+    description: "Finalize a long-term contract. Always HITL-gated."
+    remote_name: finalize_contract
+    server: *procurement_server
+
+  - name: write_award_recommendation
+    kind: mcp
+    description: "Write a markdown award recommendation. Always HITL-gated."
+    remote_name: write_award_recommendation
+    binds_to: awards
+    server: *procurement_server
+
+agents:
+  # The director cannot send messages, commit purchases, or finalise
+  # contracts itself — every action belongs to a specialist. Keeps
+  # §3.1.2's permission envelope honest.
+  - name: procurement_director
+    model: anthropic/claude-haiku-4-5
+    role: entry_point
+    system_prompt_file: prompts/procurement_director.md
+    tools: [read_inventory]
+    may_delegate_to:
+      - inventory_agent
+      - analytics
+      - procurement
+      - supplier_negotiator
+
+  - name: inventory_agent
+    model: anthropic/claude-haiku-4-5
+    system_prompt_file: prompts/inventory_agent.md
+    tools: [read_inventory]
+    may_delegate_to: []
+
+  - name: analytics
+    model: anthropic/claude-haiku-4-5
+    system_prompt_file: prompts/analytics.md
+    tools: [read_market_signal]
+    may_delegate_to: []
+
+  # The procurement agent owns the outbound + commit authority — and
+  # is the only agent that may delegate to comms_guardrail. The prompt
+  # requires APPROVED before any send_supplier_message call.
+  - name: procurement
+    model: anthropic/claude-haiku-4-5
+    system_prompt_file: prompts/procurement.md
+    tools:
+      - list_suppliers
+      - read_supplier_offer
+      - read_inventory
+      - send_supplier_message
+      - commit_purchase
+      - write_award_recommendation
+    may_delegate_to: [comms_guardrail]
+
+  # The §6.2 sovereignty guardrail. A deterministic Python callable
+  # (src/anr/script_agent.py wraps it) — no LLM. Sits inside the same
+  # mesh and envelope as the native agents.
+  - name: comms_guardrail
+    kind: script
+    script_entry: supply_chain_agents:comms_guardrail
+    tools: []
+    may_delegate_to: []
+
+# ---------------------------------------------------------------------------
+# Behavioral envelope
+# ---------------------------------------------------------------------------
+
+envelope:
+  autonomy:
+    procurement_director:
+      # director: 1 inventory + 1 analytics + N procurement runs +
+      # M supplier_negotiator instantiations + 1 final award delegation.
+      # Each delegate and each instantiate_template counts as a
+      # sub-agent toward this budget.
+      max_sub_agents: 14
+      max_delegation_depth: 2
+      max_tool_calls: 16
+    inventory_agent:
+      max_sub_agents: 0
+      max_delegation_depth: 0
+      max_tool_calls: 8
+    analytics:
+      max_sub_agents: 0
+      max_delegation_depth: 0
+      max_tool_calls: 8
+    procurement:
+      # Per-instance. One procurement run typically:
+      # list_suppliers (1) + read_supplier_offer (~3) + read_inventory
+      # (1) + ~3 guardrail-then-send_supplier_message exchanges +
+      # commit_purchase (1) + write_award_recommendation (1) ≈ 13.
+      # max_delegation_depth must be ≥ 2: procurement is invoked at
+      # depth 1 by the director and itself delegates to
+      # comms_guardrail at depth 2 (the §6.2 sovereignty review).
+      max_sub_agents: 8
+      max_delegation_depth: 2
+      max_tool_calls: 24
+    comms_guardrail:
+      max_sub_agents: 0
+      max_delegation_depth: 0
+      max_tool_calls: 0
+    supplier_negotiator:
+      max_sub_agents: 0
+      max_delegation_depth: 0
+      max_tool_calls: 4
+
+  resource_limits:
+    total_cost_usd: 1.50
+    total_runtime_sec: 300
+    total_llm_calls: 60
+
+  hitl_checkpoints:
+    # Pattern 1 — predefined deterministic.
+    # Every long-term contract requires the procurement director.
+    # Mirrors the §6.2 multi-year exclusive escalation.
+    - id: approve_contract_finalization
+      pattern: predefined
+      when:
+        tool: finalize_contract
+      prompt: "Approve finalisation of this long-term contract? Review supplier, term, and total commitment."
+
+    # Pattern 1 (a second predefined gate).
+    # Every award recommendation that hits disk is reviewed.
+    - id: approve_award_recommendation
+      pattern: predefined
+      when:
+        tool: write_award_recommendation
+      prompt: "Approve writing the award recommendation to disk?"
+
+    # Pattern 2 — conditional deterministic.
+    # Purchase commits above $50k escalate. Routine sub-$50k commits
+    # continue autonomously.
+    - id: large_purchase_commit
+      pattern: conditional
+      when:
+        tool: commit_purchase
+      condition: "args.value_usd > 50000"
+      prompt: "Purchase commit exceeds $50,000 — confirm allocation."
+
+    # Pattern 3 — agent-initiated.
+    # Any agent may escalate strategic ambiguity.
+    - id: agent_requested_review
+      pattern: agent_initiated
+      allowed_for:
+        - procurement_director
+        - inventory_agent
+        - analytics
+        - procurement
+        - supplier_negotiator
+      prompt: "Agent requested human review."
+
+    # Pattern 4 — platform-initiated.
+    # The §6.2 drift cue: after a sustained run of outbound supplier
+    # messages in a single cycle, pause and ask the human to confirm
+    # the negotiation strategy is still right.
+    - id: extended_negotiation_check
+      pattern: platform_initiated
+      trigger: "count_of('send_supplier_message') >= 4"
+      prompt: "Procurement has issued 4+ outbound messages this cycle — verify the negotiation strategy is still on track."
+
+  # Boundary policies are mesh-enforced, not prompt-enforced. The ingress
+  # policy models filtering retrieved third-party content before the
+  # agent reasons over it. The egress policies model the paper's
+  # sovereignty boundary: the procurement agent may use confidential
+  # inventory context internally, but the application may not realize an
+  # outbound disclosure to supplier agents.
+  boundary_policies:
+    - id: sanitize_supplier_prompt_injection
+      direction: ingress
+      tool: read_supplier_offer
+      content_arg: content
+      action: sanitize
+      replacement: "[supplier instruction removed by ingress policy]"
+      message: "Supplier offer contained an instruction-like payload; mesh sanitized it before agent context."
+      for_callers: [procurement, supplier_negotiator]
+      match:
+        - "(?is)BEGIN\\s+AGENT\\s+INSTRUCTION.*?END\\s+AGENT\\s+INSTRUCTION"
+
+    - id: block_supplier_sovereignty_leaks
+      direction: egress
+      tool: send_supplier_message
+      content_arg: message
+      action: block
+      message: "Supplier message disclosed inventory state, urgency, sole-source dependence, or consumption metrics."
+      for_callers: [procurement, analytics]
+      match:
+        - "\\b(running low|low stock|stock(?:\\s+(?:is|are))?\\s+(?:low|critically|down)|low\\s+inventory|inventory(?:\\s+(?:is|are))?\\s+(?:low|critically|down|tight)|only\\s+\\d+\\s+(?:units|cells|boards)|below(?:\\s+our)?\\s+reorder)\\b"
+        - "\\b(deadline|must\\s+have|need(?:ed)?(?:\\s+\\w+){0,2}\\s+by|production\\s+stop|line\\s+stoppage|will\\s+halt|cannot\\s+wait|urgent(?:ly)?)\\b"
+        - "\\b(sole\\s+source|only\\s+(?:viable\\s+)?(?:supplier|source)|no\\s+alternatives?|only\\s+option|no\\s+(?:other|backup)\\s+suppliers?)\\b"
+        - "\\b(weeks?\\s+of\\s+cover|burn\\s+rate|consumption\\s+rate)\\b"
+
+    - id: sanitize_supplier_pricing_strategy
+      direction: egress
+      tool: send_supplier_message
+      content_arg: message
+      action: sanitize
+      replacement: "[internal pricing constraint redacted]"
+      message: "Supplier message contained internal pricing strategy; mesh redacted it before transmission."
+      for_callers: [procurement, analytics]
+      match:
+        - "\\b(?:target\\s+price|maximum\\s+price|cost\\s+ceiling|budget\\s+ceiling)(?:\\s+(?:is|of|at))?\\s*\\$?[0-9,.]*\\b"
+        - "\\b(?:won['']?t\\s+pay\\s+more\\s+than|cap(?:ped)?\\s+at)\\s+\\$?[0-9,.]+\\b"
+
+    - id: review_supplier_message_after_confidential_context
+      direction: egress
+      tool: send_supplier_message
+      content_arg: message
+      action: escalate_to_human
+      data_sensitivity_at_least: confidential
+      message: "Outbound supplier message follows confidential inventory or market-signal access."
+      prompt: "This agent has used confidential internal context. Approve this supplier message after checking it does not disclose the negotiating basis?"
+      for_callers: [procurement, analytics]
+
+  # ---- Graph reshape (R2, R4) ----
+  graph_reshape:
+    allowed: true
+    permitted_changes:
+      # R4 — director may instantiate a supplier_negotiator for one
+      # newly discovered supplier whose proposal exceeds the
+      # procurement agent's standing-offer envelope (e.g. a multi-year
+      # exclusive). R4 always fires HITL regardless.
+      - kind: instantiate_template
+        template: supplier_negotiator
+        max_total: 2
+        for_callers: [procurement_director]
+
+      # R2 — in unusual cases the analytics agent may need to send a
+      # narrowly scoped supplier message itself (e.g. asking a vendor
+      # to confirm a published spec). HITL + reason mandatory.
+      - kind: acquire_capability
+        capability_kind: tool
+        capability_name: send_supplier_message
+        for_callers: [analytics]
+        requires_hitl: true
+        reason_required: true
+
+# ---------------------------------------------------------------------------
+# Agent templates — runtime-instantiated (R4)
+# ---------------------------------------------------------------------------
+
+agent_templates:
+  - name: supplier_negotiator
+    model: anthropic/claude-haiku-4-5
+    description: "Single-purpose negotiator for one newly discovered supplier proposing terms outside the standing-offer envelope."
+    parameters: [supplier_id, proposal_summary, negotiation_objective]
+    system_prompt_template: |
+      You are a single-purpose negotiator for **{supplier_id}**.
+
+      The procurement agent has surfaced a non-standard proposal from
+      this supplier:
+
+        {proposal_summary}
+
+      Your negotiation objective for this assessment:
+
+        {negotiation_objective}
+
+      Your job is to give the procurement director a concise written
+      assessment the director can act on without further analysis.
+
+      You may:
+        - `read_supplier_offer({supplier_id})` once
+        - `request_human_review(reason=...)` if the proposal cannot be
+          assessed responsibly from the supplier offer alone
+
+      Return ≤ 150 words covering:
+        - Risk profile (lock-in, counterparty, lead-time, quality)
+        - Estimated value at the proposed terms vs. the standing-offer
+          envelope (qualitative if pricing detail is missing)
+        - Recommended next step, ending with one of:
+          ACCEPT_AS_PROPOSED  /  COUNTER  /  REJECT  /  ESCALATE
+      Do not delegate. Do not send supplier messages. Do not commit
+      purchases. Total tool calls ≤ 2.
+    tools: [read_supplier_offer]
+    may_delegate_to: []
+
+# ---------------------------------------------------------------------------
+# Orchestrator (§3.2.1 hybrid)
+# ---------------------------------------------------------------------------
+
+orchestrator:
+  kind: hybrid
+  # Deterministic shortcuts let an operator hit a specialist directly
+  # for inventory snapshots or analyst reads without going through the
+  # director's reasoning layer.
+  deterministic_routes:
+    - input_regex: "^inventory:"
+      route_to: inventory_agent
+    - input_regex: "^market:"
+      route_to: analytics
+  default_entry: procurement_director

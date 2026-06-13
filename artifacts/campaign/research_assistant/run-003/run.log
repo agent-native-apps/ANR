@@ -1,0 +1,99 @@
+────────────────────── compiling research-assistant v0.1 ───────────────────────
+───────────────────────────────── running task ─────────────────────────────────
+task: Write a short briefing on the agent-native application paradigm based on 
+the docs folder.
+[21:18:59] orchestrator: routing task to 'coordinator'        orchestrator.py:71
+[21:18:59] coordinator turn 1: calling LLM (2 messages, 7 tools)     agent.py:66
+[21:19:00]   coordinator -> mesh.invoke(list_docs, {})              agent.py:106
+           coordinator turn 2: calling LLM (4 messages, 7 tools)     agent.py:66
+[21:19:02]   coordinator -> mesh.invoke(grep_files, {"query":       agent.py:106
+           "agent-native application paradigm", "context_lines": 2,             
+           "max_matches": 20})                                                  
+             coordinator -> mesh.invoke(grep_files, {"query":       agent.py:106
+           "native agents declarative", "context_lines": 2,                     
+           "max_matches": 20})                                                  
+             coordinator -> mesh.invoke(grep_files, {"query":       agent.py:106
+           "agent mesh architecture orchestration",                             
+           "context_lines": 2, "max_matches": 20})                              
+           coordinator turn 3: calling LLM (8 messages, 7 tools)     agent.py:66
+[21:19:04]   coordinator -> mesh.invoke(grep_files, {"query":       agent.py:106
+           "native agents", "context_lines": 3, "max_matches": 20})             
+             coordinator -> mesh.invoke(grep_files, {"query":       agent.py:106
+           "agent mesh", "context_lines": 3, "max_matches": 20})                
+             coordinator -> mesh.invoke(grep_files, {"query":       agent.py:106
+           "declarative envelope", "context_lines": 3,                          
+           "max_matches": 20})                                                  
+           coordinator turn 4: calling LLM (12 messages, 7 tools)    agent.py:66
+[21:19:06]   coordinator -> mesh.invoke(read_file, {"path":         agent.py:106
+           "agent_mesh.md"})                                                    
+             coordinator -> mesh.invoke(read_file, {"path":         agent.py:106
+           "native_vs_script_agents.md"})                                       
+             coordinator -> mesh.invoke(read_file, {"path":         agent.py:106
+           "declarative_envelope.md"})                                          
+             coordinator -> mesh.invoke(read_file, {"path":         agent.py:106
+           "permission_envelope.md"})                                           
+           coordinator turn 5: calling LLM (17 messages, 7 tools)    agent.py:66
+[21:19:07]   coordinator -> mesh.invoke(read_file, {"path":         agent.py:106
+           "safety_invariants.md"})                                             
+             coordinator -> mesh.invoke(read_file, {"path":         agent.py:106
+           "sub_agent_delegation.md"})                                          
+             coordinator -> mesh.invoke(read_file, {"path":         agent.py:106
+           "hitl_patterns.md"})                                                 
+           coordinator turn 6: calling LLM (21 messages, 7 tools)    agent.py:66
+[21:19:16]   coordinator -> mesh.invoke(delegate, {"target_agent":  agent.py:106
+           "writer", "task": "Write a short briefing (approximately             
+           800\u20131200 words) on the agent-native application                 
+           paradigm based on the following c)                                   
+[21:19:16] orchestrator: spawning 'writer#3f5aa6'            orchestrator.py:104
+           (parent=coordinator#0a5fde, depth=1)                                 
+           writer turn 1: calling LLM (2 messages, 4 tools)          agent.py:66
+[21:19:17]   writer -> mesh.invoke(read_file, {"path": "docs"})     agent.py:106
+           writer turn 2: calling LLM (4 messages, 4 tools)          agent.py:66
+[21:19:45]   writer -> mesh.invoke(write_note, {"filename":         agent.py:106
+           "agent_native_paradigm_briefing.md", "content": "# The               
+           Agent-Native Application Paradigm: A Briefing\n\n##                  
+           Overview\n\nAgent-native applications re)                            
+hitl: auto-approve writer → write_note  (approve_note_write)
+           writer turn 3: calling LLM (6 messages, 4 tools)          agent.py:66
+[21:19:46] coordinator turn 7: calling LLM (23 messages, 7 tools)    agent.py:66
+──────────────────────────────── final response ────────────────────────────────
+Perfect! I've completed your request. Here's what was done:
+
+## Summary
+
+I explored the docs folder and compiled a comprehensive briefing on the 
+**agent-native application paradigm** by synthesizing material from 7 key 
+documentation files:
+
+- **Agent Mesh** — the infrastructure layer that mediates and enforces agent 
+interactions
+- **Native vs Script Agents** — the pluggable agent-kind model  
+- **Declarative Application Specification** — why specs define an envelope, not 
+a blueprint
+- **Permission Envelopes** — infrastructure-enforced access control, not 
+prompt-based
+- **Safety Invariants** — six core guarantees the mesh enforces
+- **Sub-agent Delegation** — semantics of `delegate()` and `spawn_parallel()`
+- **Human-in-the-loop Patterns** — four overlapping oversight mechanisms
+
+The briefing (~1,100 words) covers the core concept, the mesh architecture, 
+declarative specifications, permission enforcement, agent kinds, safety 
+invariants, HITL patterns, and a conclusion emphasizing the paradigm shift from 
+prompt-based to infrastructure-enforced safety.
+
+**Output location:** 
+`/output/campaign/research_assistant/run-003/notes/agent_native_paradigm_briefin
+g.md`
+───────────────────────────────── run summary ──────────────────────────────────
+{
+    'totals': {
+        'tool_calls': 16,
+        'llm_calls': 10,
+        'cost_usd': 0.0695,
+        'elapsed_sec': 45.47,
+        'sub_agents_spawned': {'coordinator': 1}
+    },
+    'audit_log': 
+'output/campaign/research_as
+sistant/run-003/audit.jsonl'
+}

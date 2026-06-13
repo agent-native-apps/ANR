@@ -1,0 +1,342 @@
+# Emergency first response (paper §6.1) — agent-native disaster response.
+#
+# A six-agent (+ one template) incident-command application. An
+# incident_commander surveys open reports, runs parallel
+# field_assessment instances over candidate sites, dispatches via
+# logistics, escalates evacuation orders to the human commander, and
+# can instantiate a hazmat_coordinator template mid-incident when a
+# chemical signal surfaces. The hazmat coordinator may, with explicit
+# human approval, acquire a `consult_external_agency` capability and
+# call out to a neighbouring agency — ANR's stand-in for cross-org A2A.
+#
+# Exercises:
+#   - Hybrid orchestrator with deterministic shortcut routes
+#   - R1 (parallel field_assessment instances)
+#   - R4 (hazmat_coordinator template instantiation, mandatory HITL)
+#   - R2 (hazmat_coordinator runtime acquisition of consult_external_agency)
+#   - All four §3.2.2 HITL patterns
+#
+# Caveats: ANR is single-process; the paper's §6.1 satellite/UAV/edge
+# inference / TSN / 5G URLLC layers are NOT modelled here. This spec
+# captures the application/envelope/reshape semantics only.
+
+application:
+  name: emergency-response
+  version: "0.1"
+  description: "Incident command: triage, parallel field assessments, mid-incident hazmat coordinator, mandatory HITL on evacuation orders. Best with ANR_HITL=ui."
+  example_task: >-
+    Survey today's open incidents (post-quake at 06:42). Triage them, run
+    parallel field assessments on the high-severity sites, instantiate a
+    hazmat coordinator if a chemical signal surfaces, and produce a
+    consolidated SITREP.
+
+# ---------------------------------------------------------------------------
+# Application structure
+# ---------------------------------------------------------------------------
+
+data_sources:
+  - name: incidents
+    kind: local_directory
+    path: ./data/incidents
+    description: "Incoming incident reports + sensor telemetry."
+    content_type: text/markdown
+    sensitivity: restricted
+    tags: [incident, telemetry, public_safety]
+
+  - name: sitreps
+    kind: local_directory
+    path: ./output/sitreps
+    description: "Outgoing situation reports (one per consolidated incident)."
+    content_type: text/markdown
+
+tools:
+  - name: list_incident_reports
+    kind: mcp
+    description: "Enumerate open incidents (id, site, severity, headline)."
+    remote_name: list_incident_reports
+    binds_to: incidents
+    server: &incident_server
+      command: python
+      args: ["-m", "mcp_servers.incident_server"]
+
+  - name: read_incident_report
+    kind: mcp
+    description: "Read the full text of one incident report by id (e.g. 'inc-001')."
+    remote_name: read_incident_report
+    binds_to: incidents
+    server: *incident_server
+
+  - name: read_sensor_telemetry
+    kind: mcp
+    description: "Read the latest telemetry for a site. kind ∈ {structural, chemical, thermal}."
+    remote_name: read_sensor_telemetry
+    binds_to: incidents
+    server: *incident_server
+
+  - name: dispatch_resources
+    kind: mcp
+    description: "Dispatch units of a resource kind to a site. Conditional HITL above 5 units."
+    remote_name: dispatch_resources
+    server: *incident_server
+
+  - name: issue_evacuation_order
+    kind: mcp
+    description: "Issue an evacuation order around a site. Always HITL-gated."
+    remote_name: issue_evacuation_order
+    server: *incident_server
+
+  - name: consult_external_agency
+    kind: mcp
+    boundary: egress
+    description: "Stand-in for cross-agency A2A consultation. Acquired at runtime by the hazmat coordinator with mandatory HITL."
+    remote_name: consult_external_agency
+    server: *incident_server
+
+  - name: write_situation_report
+    kind: mcp
+    description: "Write a markdown SITREP. Always HITL-gated by the mesh."
+    remote_name: write_situation_report
+    binds_to: sitreps
+    server: *incident_server
+
+agents:
+  # The commander has narrow read-only authority. It cannot dispatch,
+  # evacuate, write SITREPs, or consult external agencies — every
+  # operational action belongs to a specialist. Keeps §3.1.2's
+  # permission envelope honest.
+  - name: incident_commander
+    model: anthropic/claude-haiku-4-5
+    role: entry_point
+    system_prompt_file: prompts/incident_commander.md
+    tools: [list_incident_reports, read_incident_report]
+    may_delegate_to:
+      - triage
+      - field_assessment
+      - logistics
+      - communication
+      - hazmat_coordinator
+
+  - name: triage
+    model: anthropic/claude-haiku-4-5
+    system_prompt_file: prompts/triage.md
+    tools: [list_incident_reports, read_incident_report]
+    may_delegate_to: []
+
+  # Field assessment is the only agent that reads telemetry. Multiple
+  # instances run in parallel via R1.
+  - name: field_assessment
+    model: anthropic/claude-haiku-4-5
+    system_prompt_file: prompts/field_assessment.md
+    tools: [read_incident_report, read_sensor_telemetry]
+    may_delegate_to: []
+
+  # Logistics owns dispatch and evacuation. Evacuation is always
+  # HITL-gated by the predefined checkpoint below; dispatch above 5
+  # units is conditionally HITL-gated.
+  - name: logistics
+    model: anthropic/claude-haiku-4-5
+    system_prompt_file: prompts/logistics.md
+    tools: [dispatch_resources, issue_evacuation_order]
+    may_delegate_to: []
+
+  # Communication is the only writer. Every SITREP write is HITL-gated.
+  - name: communication
+    model: anthropic/claude-haiku-4-5
+    system_prompt_file: prompts/communication.md
+    tools: [write_situation_report]
+    may_delegate_to: []
+
+# ---------------------------------------------------------------------------
+# Behavioral envelope
+# ---------------------------------------------------------------------------
+
+envelope:
+  autonomy:
+    incident_commander:
+      # commander + triage + 3 parallel field_assessments + logistics +
+      # communication + (optional) hazmat_coordinator gives plenty of
+      # headroom for one normal incident response.
+      max_sub_agents: 14
+      max_delegation_depth: 2
+      max_tool_calls: 30
+    triage:
+      max_sub_agents: 0
+      max_delegation_depth: 0
+      max_tool_calls: 8
+    # Per-instance — each parallel assessor gets its own tool-call budget.
+    field_assessment:
+      max_sub_agents: 0
+      max_delegation_depth: 0
+      max_tool_calls: 16
+    logistics:
+      max_sub_agents: 0
+      max_delegation_depth: 0
+      max_tool_calls: 10
+    communication:
+      max_sub_agents: 0
+      max_delegation_depth: 0
+      max_tool_calls: 4
+    hazmat_coordinator:
+      max_sub_agents: 0
+      max_delegation_depth: 0
+      max_tool_calls: 4
+
+  resource_limits:
+    total_cost_usd: 1.50
+    total_runtime_sec: 300
+    total_llm_calls: 60
+
+  hitl_checkpoints:
+    # Pattern 1 — predefined deterministic.
+    # Every evacuation order requires the human incident commander.
+    # This is the single most consequential operational decision in the
+    # paper's §6.1 walkthrough.
+    - id: approve_evacuation_order
+      pattern: predefined
+      when:
+        tool: issue_evacuation_order
+      prompt: "Approve evacuation order? Review site, perimeter, and the assessment chain that justified it."
+
+    # Pattern 1 (a second predefined gate).
+    # Every consolidated SITREP that crosses agency lines is reviewed
+    # before transmission.
+    - id: approve_sitrep_transmission
+      pattern: predefined
+      when:
+        tool: write_situation_report
+      prompt: "Approve transmission of this consolidated SITREP?"
+
+    # Pattern 2 — conditional deterministic.
+    # A large dispatch (more than 5 units of any single resource kind)
+    # escalates. Routine sub-5 dispatches continue autonomously.
+    - id: large_dispatch
+      pattern: conditional
+      when:
+        tool: dispatch_resources
+      condition: "args.count > 5"
+      prompt: "Dispatch exceeds 5 units — confirm allocation given other open incidents."
+
+    # Pattern 3 — agent-initiated.
+    # Any agent in this app may escalate an ambiguity it cannot
+    # responsibly resolve from the brief.
+    - id: agent_requested_review
+      pattern: agent_initiated
+      allowed_for:
+        - incident_commander
+        - triage
+        - field_assessment
+        - logistics
+        - communication
+        - hazmat_coordinator
+      prompt: "Agent requested human review."
+
+    # Pattern 4 — platform-initiated.
+    # As the response extends, the platform pauses once to confirm the
+    # commander is still on the right strategy. Mirrors the §6.1
+    # observability check that re-validates ongoing reasoning.
+    - id: extended_operation_check
+      pattern: platform_initiated
+      trigger: "tool_calls >= 18 or cost_usd >= 0.80"
+      prompt: "Response has been running for a while — confirm the current incident strategy is still right."
+
+  # Cross-agency consultation is a boundary exchange. The prototype
+  # uses a local MCP tool as the transport stand-in, but the mesh still
+  # enforces a small egress policy over the outbound query.
+  boundary_policies:
+    - id: block_external_incident_secrets
+      direction: egress
+      tool: consult_external_agency
+      content_arg: query
+      action: block
+      message: "External agency query attempted to disclose protected incident records."
+      for_callers: [hazmat_coordinator]
+      match:
+        - "\\b(classified|personnel\\s+record|patient\\s+name|ssn|social\\s+security|law\\s+enforcement\\s+only)\\b"
+
+  # ---- Graph reshape (R1, R2, R4) ----
+  graph_reshape:
+    allowed: true
+    permitted_changes:
+      # R1 — commander may run up to 4 parallel field_assessment
+      # instances against independent sites.
+      - kind: spawn_instance
+        of_agent: field_assessment
+        max_concurrent: 4
+        for_callers: [incident_commander]
+
+      # R4 — commander may instantiate a hazmat_coordinator when a
+      # chemical signal surfaces. R4 always fires HITL regardless.
+      - kind: instantiate_template
+        template: hazmat_coordinator
+        max_total: 2
+        for_callers: [incident_commander]
+
+      # R2 — the hazmat_coordinator may acquire the
+      # consult_external_agency tool at runtime to call out to a
+      # neighbouring agency (the paper's A2A consultation). Mandatory
+      # HITL + reason. Stand-in for full A2A — ANR is single-process.
+      - kind: acquire_capability
+        capability_kind: tool
+        capability_name: consult_external_agency
+        for_callers: [hazmat_coordinator]
+        requires_hitl: true
+        reason_required: true
+
+# ---------------------------------------------------------------------------
+# Agent templates — runtime-instantiated (R4)
+# ---------------------------------------------------------------------------
+
+agent_templates:
+  - name: hazmat_coordinator
+    model: anthropic/claude-haiku-4-5
+    description: "Mid-incident hazmat coordinator instantiated when a chemical signal surfaces."
+    parameters: [site, agent_class]
+    system_prompt_template: |
+      You are a hazmat coordinator instantiated mid-incident at site
+      **{site}**. The provisional agent classification is **{agent_class}**.
+
+      You are the dependency the commander has inserted between the
+      hazmat-affected site and any operational decision (evacuation,
+      dispatch routing) at that site. Your job is to:
+
+        1. Read the chemical telemetry for the site to confirm the
+           provisional classification (`read_sensor_telemetry(site, "chemical")`).
+        2. If the on-scene telemetry is insufficient (low confidence or
+           ambiguous compound identification), use `request_grant` to
+           acquire `consult_external_agency`, providing a clear reason.
+           The mesh requires human approval for this. On approval,
+           consult `county_hazmat_unit` (the paper's neighbouring
+           agency) with a focused query.
+        3. Issue ONE clearance verdict in the final line, in this
+           exact format:
+
+           ```
+           CLEARANCE: site={site} status=<HOLD|PROCEED|EVACUATE> recommended_perimeter_blocks=<int|na>
+           ```
+
+      Tools you may call:
+        - `read_sensor_telemetry(site, kind)` — only for {site}
+        - `request_grant(capability="consult_external_agency", reason=...)` — gated
+        - `consult_external_agency(agency, query)` — only after grant
+        - `request_human_review(reason=...)` — escalate ambiguity
+
+      Do not delegate. Do not dispatch or issue orders directly — the
+      commander routes your verdict to logistics. Total tool calls ≤ 4.
+    tools: [read_sensor_telemetry]
+    may_delegate_to: []
+
+# ---------------------------------------------------------------------------
+# Orchestrator (§3.2.1 hybrid)
+# ---------------------------------------------------------------------------
+
+orchestrator:
+  kind: hybrid
+  # Deterministic shortcuts let an operator hit a specialist directly
+  # when there's no need for the commander's reasoning layer (e.g.
+  # asking the assessor to look at one site, or scoring one report).
+  deterministic_routes:
+    - input_regex: "^assess:"
+      route_to: field_assessment
+    - input_regex: "^triage:"
+      route_to: triage
+  default_entry: incident_commander

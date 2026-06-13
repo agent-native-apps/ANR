@@ -1,0 +1,26 @@
+{
+  "controller_board_v3": {
+    "price_trend_90d": "+6% (substrate cost inflation; expected to persist)",
+    "supply_risk": "moderate",
+    "alt_suppliers_in_registry": 3,
+    "note": "Two new entrants (Meridian, Sentinel) advertising aggressive pricing; reliability data sparse."
+  },
+  "lithium_cell_18650": {
+    "price_trend_90d": "-2% (capacity additions in APAC)",
+    "supply_risk": "low",
+    "alt_suppliers_in_registry": 11,
+    "note": "Buyer's market; standard reorder logic appropriate."
+  },
+  "harness_assembly_a": {
+    "price_trend_90d": "+3% (labor cost passthrough)",
+    "supply_risk": "elevated",
+    "alt_suppliers_in_registry": 2,
+    "note": "Arc capacity constraint the dominant near-term risk."
+  },
+  "thermal_paste_xt": {
+    "price_trend_90d": "flat",
+    "supply_risk": "low",
+    "alt_suppliers_in_registry": 7,
+    "note": "Commodity-like; no procurement attention required this cycle."
+  }
+}

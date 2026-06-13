@@ -1,0 +1,28 @@
+[project]
+name = "anr"
+version = "0.1.0"
+description = "Agent-Native Runtime: a minimal compiler and runtime that turns a YAML application specification into a running multi-agent system with a policy-enforcing mesh."
+requires-python = ">=3.11"
+dependencies = [
+    "litellm>=1.55.0",
+    "mcp>=1.2.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.6",
+    "rich>=13.7",
+    "python-dotenv>=1.0",
+    "fastapi>=0.135.3",
+    "uvicorn>=0.44.0",
+    "jinja2>=3.1.6",
+]
+
+[project.scripts]
+anr = "anr.cli:main"
+anr-viz = "anr_viz.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["anr*", "mcp_servers*"]

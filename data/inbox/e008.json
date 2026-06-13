@@ -1,0 +1,8 @@
+{
+  "id": "e008",
+  "from": "compliance@regulator.gov",
+  "to": "legal@example.com",
+  "date": "2026-04-14T11:00:00Z",
+  "subject": "Annual SOC-2 evidence package due May 15",
+  "body": "This is a reminder that your annual SOC-2 Type II evidence package is due May 15, 2026. Late submission may trigger a certification review. The submissions portal accepts uploads from April 25 onward. Questions: contact our office during business hours."
+}

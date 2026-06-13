@@ -1,0 +1,8 @@
+{
+  "id": "e007",
+  "from": "accounts@cdn-provider.com",
+  "to": "you@example.com",
+  "date": "2026-04-13T14:30:00Z",
+  "subject": "Contract renewal: CDN-Pro tier up for renewal May 1",
+  "body": "Your CDN-Pro contract renews on May 1, 2026. Current annual rate: $48,000. With the new multi-year loyalty discount, the renewal rate would be $38,400. Please confirm by April 25 to lock in the discount. Happy to hop on a call to discuss tier upgrades or commit-use terms."
+}

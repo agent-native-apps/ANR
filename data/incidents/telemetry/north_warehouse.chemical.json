@@ -1,0 +1,11 @@
+{
+  "site": "north_warehouse",
+  "kind": "chemical",
+  "captured_at": "06:55",
+  "sensor": "downwind colorimetric badge array",
+  "summary": "Persistent oxidizing-agent signal detected 150m and 250m downwind. Signal pattern most consistent with chlorine-family oxidizer. Specific compound NOT positively identified by on-scene sensors.",
+  "concentration_ppm_est": 1.6,
+  "wind_dir": "NE at 6 m/s",
+  "confidence": 0.55,
+  "recommendation": "Treat as unidentified hazmat; hold downwind operations until confirmed."
+}

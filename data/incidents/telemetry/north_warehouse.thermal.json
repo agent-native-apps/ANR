@@ -1,0 +1,9 @@
+{
+  "site": "north_warehouse",
+  "kind": "thermal",
+  "captured_at": "06:53",
+  "drone_pass": "DR-3",
+  "summary": "Peak surface temps 720C at the central roof span; consistent with fully involved warehouse fire. No localized cold spots that would indicate fluid leak; no obvious structural collapse yet.",
+  "confidence": 0.84,
+  "recommendation": "Defensive exterior posture; do not commit interior crews."
+}

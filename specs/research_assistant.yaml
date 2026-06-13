@@ -1,0 +1,239 @@
+# Research-assistant application specification.
+#
+# Structure: a coordinator that dispatches focused sub-tasks to one or more
+# researcher instances, then hands off to a writer which produces a note.
+#
+# Envelope: scoped sub-agent spawning, a total-call budget, and three of the
+# four §3.2.2 HITL patterns. The inbox-triage spec covers platform_initiated.
+
+application:
+  name: research-assistant
+  version: "0.1"
+  description: "Coordinator delegates to researcher + writer over a markdown corpus; HITL on write_note. Good first demo."
+  example_task: >-
+    Write a short briefing on the agent-native application paradigm
+    based on the docs folder.
+
+# ---------------------------------------------------------------------------
+# Application structure
+# ---------------------------------------------------------------------------
+
+data_sources:
+  - name: docs
+    kind: local_directory
+    path: ./data/knowledge_base
+    description: "Markdown notes the user dropped in for the agent to read."
+    content_type: text/markdown
+
+  - name: web
+    kind: http
+    allowed_domains:
+      - arxiv.org
+      - wikipedia.org
+      - en.wikipedia.org
+    description: "Read-only web fetch, restricted to a short allow-list."
+
+tools:
+  # A single MCP server exposes all five local tools. In a larger deployment
+  # these would likely be split (filesystem, fetch, note-writer) but one
+  # server keeps the demo tractable while still using real MCP transport.
+  - name: list_docs
+    kind: mcp
+    description: "One-shot enumeration of files in the docs corpus (path + size). Cheap; intended to be called once at the start of a run."
+    remote_name: list_docs
+    binds_to: docs
+    server: &tools_server
+      command: python
+      args: ["-m", "mcp_servers.tools_server"]
+
+  - name: grep_files
+    kind: mcp
+    description: "Keyword search across the docs corpus. Returns matched lines with surrounding context, so the agent can locate relevant sections without reading every file."
+    remote_name: grep_files
+    binds_to: docs
+    server: *tools_server
+
+  - name: read_file
+    kind: mcp
+    description: "Read the full text of a file inside the docs folder."
+    remote_name: read_file
+    binds_to: docs
+    server: *tools_server
+
+  - name: fetch_url
+    kind: mcp
+    description: "Fetch the contents of a URL (subject to mesh-enforced allow-list)."
+    remote_name: fetch_url
+    binds_to: web
+    server: *tools_server
+
+  - name: write_note
+    kind: mcp
+    description: "Write a markdown note to the output folder."
+    remote_name: write_note
+    server: *tools_server
+
+agents:
+  - name: coordinator
+    model: anthropic/claude-haiku-4-5
+    role: entry_point
+    system_prompt_file: prompts/coordinator.md
+    # Note: the coordinator deliberately does NOT have write_note. Only the
+    # writer can write notes, and every call is HITL-gated. This is the
+    # §3.1.2 permission envelope working as advertised.
+    tools: [list_docs, grep_files, read_file]
+    may_delegate_to: [researcher, writer]
+
+  - name: researcher
+    model: anthropic/claude-haiku-4-5
+    system_prompt_file: prompts/researcher.md
+    tools: [grep_files, read_file, fetch_url]
+    may_delegate_to: []
+
+  - name: writer
+    model: anthropic/claude-haiku-4-5
+    system_prompt_file: prompts/writer.md
+    tools: [read_file, write_note]
+    may_delegate_to: []
+
+# ---------------------------------------------------------------------------
+# Behavioral envelope
+# ---------------------------------------------------------------------------
+
+envelope:
+  autonomy:
+    coordinator:
+      max_sub_agents: 3
+      max_delegation_depth: 2
+      max_tool_calls: 25
+    researcher:
+      max_sub_agents: 0
+      max_delegation_depth: 0
+      max_tool_calls: 15
+    writer:
+      max_sub_agents: 0
+      max_delegation_depth: 0
+      max_tool_calls: 8
+
+  resource_limits:
+    total_cost_usd: 1.00
+    total_runtime_sec: 180
+    total_llm_calls: 40
+
+  hitl_checkpoints:
+    # Pattern 1 — predefined deterministic (§3.2.2):
+    # Every write of a note to disk must be explicitly approved.
+    - id: approve_note_write
+      pattern: predefined
+      when:
+        tool: write_note
+      prompt: "Approve writing the note to disk?"
+
+    # Pattern 2 — conditional deterministic (§3.2.2):
+    # Fetching a URL is fine for allow-listed domains; anything else requires
+    # a human. The condition is evaluated by the mesh against the call args.
+    # (Reaches the researcher only after the R2 grant below; reaches the
+    # writer only after the R3 grant. Either way, an off-list URL pauses.)
+    - id: unknown_domain_fetch
+      pattern: conditional
+      when:
+        tool: fetch_url
+      condition: "host(args.url) not in allowed_domains"
+      prompt: "Fetch from a non-allow-listed domain? Review the URL carefully."
+
+    # Pattern 3 — agent-initiated (§3.2.2):
+    # Any agent may call the pseudo-tool request_human_review(reason=...) to
+    # escalate a decision of its own accord. The mesh surfaces the reason.
+    - id: agent_requested_review
+      pattern: agent_initiated
+      allowed_for: [coordinator, researcher, writer]
+      prompt: "Agent requested human review."
+
+  # ---- Graph reshape (R1, R2, R3, R4) ----
+  # The envelope grants the orchestrator authority to vary the running graph
+  # at runtime. Each entry in `permitted_changes` declares one shape of
+  # mutation that is allowed; anything outside the list is refused.
+  graph_reshape:
+    allowed: true
+    permitted_changes:
+      # R1 — coordinator may spawn up to three concurrent researcher
+      # instances on independent sub-questions, via the spawn_parallel
+      # pseudo-tool. Each instance is a distinct node in the live graph.
+      - kind: spawn_instance
+        of_agent: researcher
+        max_concurrent: 3
+        for_callers: [coordinator]
+
+      # R2 — the researcher works the local docs corpus by default. If
+      # mid-investigation it discovers that resolving the question requires
+      # one specific external lookup (e.g. cross-checking a paper citation),
+      # it can request_grant for fetch_url with a stated reason. HITL is
+      # mandatory; the grant scopes to this one live researcher invocation.
+      - kind: acquire_capability
+        capability_kind: tool
+        capability_name: fetch_url
+        for_callers: [researcher]
+        requires_hitl: true
+        reason_required: true
+
+      # R3 — the writer composes from what the coordinator handed it. If
+      # mid-draft it wants to confirm that no other doc in the corpus
+      # contradicts a claim it is about to assert, it can acquire grep_files
+      # for a single targeted cross-check before writing. Natural in-flow
+      # acquisition; the writer normally only reads what it was pointed at.
+      - kind: acquire_capability
+        capability_kind: tool
+        capability_name: grep_files
+        for_callers: [writer]
+        requires_hitl: true
+        reason_required: true
+
+      # R4 — coordinator may instantiate a focused_researcher template
+      # at runtime, parameterised for a specific focus area. The mesh
+      # ALWAYS fires HITL on R4 regardless of the rule (mandatory review).
+      - kind: instantiate_template
+        template: focused_researcher
+        max_total: 5
+        for_callers: [coordinator]
+
+# ---------------------------------------------------------------------------
+# Agent templates — blueprints for agents instantiated at runtime (R4)
+# ---------------------------------------------------------------------------
+
+agent_templates:
+  - name: focused_researcher
+    model: anthropic/claude-haiku-4-5
+    description: "A single-purpose researcher specialised by 'focus_area' parameter."
+    parameters: [focus_area]
+    system_prompt_template: |
+      You are a single-purpose research agent.
+      Your sole focus is: {focus_area}.
+
+      You may search the docs corpus with `grep_files(query, ...)`
+      and read individual files with `read_file(path)`. Cite source
+      files inline as `[docs/filename.md]`. If you genuinely cannot
+      proceed without human input, call `request_human_review` with
+      a clear reason.
+
+      Return a concise, structured summary of your findings as your
+      final message. Do not delegate to other agents — you are a
+      terminal node.
+    tools: [grep_files, read_file]
+    may_delegate_to: []
+
+# ---------------------------------------------------------------------------
+# Orchestrator (§3.2.1 hybrid)
+# ---------------------------------------------------------------------------
+
+orchestrator:
+  kind: hybrid
+  # Deterministic routes are matched against the incoming task first.
+  # If any matches, the task is dispatched straight to the named agent,
+  # skipping the reasoning layer of the coordinator. This demonstrates the
+  # deterministic end of the hybrid spectrum.
+  deterministic_routes:
+    - input_regex: "^quick-read:"
+      route_to: researcher
+    - input_regex: "^compose:"
+      route_to: writer
+  default_entry: coordinator

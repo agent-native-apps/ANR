@@ -1,0 +1,93 @@
+────────────────────── compiling research-assistant v0.1 ───────────────────────
+───────────────────────────────── running task ─────────────────────────────────
+task: Write a short briefing on the agent-native application paradigm based on 
+the docs folder.
+[21:19:00] orchestrator: routing task to 'coordinator'        orchestrator.py:71
+[21:19:00] coordinator turn 1: calling LLM (2 messages, 7 tools)     agent.py:66
+[21:19:01]   coordinator -> mesh.invoke(list_docs, {})              agent.py:106
+           coordinator turn 2: calling LLM (4 messages, 7 tools)     agent.py:66
+[21:19:03]   coordinator -> mesh.invoke(grep_files, {"query":       agent.py:106
+           "agent-native application paradigm", "context_lines":                
+           2})                                                                  
+             coordinator -> mesh.invoke(grep_files, {"query":       agent.py:106
+           "native agents orchestration framework",                             
+           "context_lines": 2})                                                 
+             coordinator -> mesh.invoke(grep_files, {"query":       agent.py:106
+           "agent mesh system architecture", "context_lines": 2})               
+           coordinator turn 3: calling LLM (8 messages, 7 tools)     agent.py:66
+[21:19:04]   coordinator -> mesh.invoke(grep_files, {"query":       agent.py:106
+           "agent mesh", "context_lines": 2, "max_matches": 10})                
+             coordinator -> mesh.invoke(grep_files, {"query":       agent.py:106
+           "native agents spawn delegation", "context_lines": 2})               
+             coordinator -> mesh.invoke(grep_files, {"query":       agent.py:106
+           "declarative envelope policy", "context_lines": 2})                  
+           coordinator turn 4: calling LLM (12 messages, 7 tools)    agent.py:66
+[21:19:06]   coordinator -> mesh.invoke(read_file, {"path":         agent.py:106
+           "agent_mesh.md"})                                                    
+             coordinator -> mesh.invoke(read_file, {"path":         agent.py:106
+           "native_vs_script_agents.md"})                                       
+             coordinator -> mesh.invoke(read_file, {"path":         agent.py:106
+           "declarative_envelope.md"})                                          
+             coordinator -> mesh.invoke(read_file, {"path":         agent.py:106
+           "boundary_policies.md"})                                             
+           coordinator turn 5: calling LLM (17 messages, 7 tools)    agent.py:66
+[21:19:08]   coordinator -> mesh.invoke(read_file, {"path":         agent.py:106
+           "sub_agent_delegation.md"})                                          
+             coordinator -> mesh.invoke(read_file, {"path":         agent.py:106
+           "safety_invariants.md"})                                             
+             coordinator -> mesh.invoke(read_file, {"path":         agent.py:106
+           "resource_budgets.md"})                                              
+           coordinator turn 6: calling LLM (21 messages, 7 tools)    agent.py:66
+[21:19:15]   coordinator -> mesh.invoke(delegate, {"target_agent":  agent.py:106
+           "writer", "task": "Write a short briefing (300\u2013400              
+           words) on the agent-native application paradigm based on             
+           the following key concepts:\n\)                                      
+[21:19:15] orchestrator: spawning 'writer#130887'            orchestrator.py:104
+           (parent=coordinator#3b996f, depth=1)                                 
+           writer turn 1: calling LLM (2 messages, 4 tools)          agent.py:66
+[21:19:24]   writer -> mesh.invoke(write_note, {"filename":         agent.py:106
+           "agent-native-paradigm-briefing.md", "content": "#                   
+           Agent-Native Application Paradigm: A Design Philosophy               
+           for Trustworthy Autonomy\n\n## Executive )                           
+hitl: auto-approve writer → write_note  (approve_note_write)
+           writer turn 2: calling LLM (4 messages, 4 tools)          agent.py:66
+[21:19:26] coordinator turn 7: calling LLM (23 messages, 7 tools)    agent.py:66
+──────────────────────────────── final response ────────────────────────────────
+## Summary
+
+I've created a short briefing on the agent-native application paradigm based on 
+the documentation in your folder. The briefing has been written to the file:
+
+**`output/campaign/research_assistant/run-004/notes/agent-native-paradigm-briefi
+ng.md`** (397 words)
+
+The briefing synthesizes the core concepts into a coherent narrative:
+
+- **Problem**: Autonomous agents cannot be trusted to self-enforce safety 
+constraints through prompts alone.
+- **Solution**: An agent mesh—dedicated infrastructure that mediates all agent 
+interactions and enforces policy independently of the agent's reasoning.
+- **Key mechanisms**: Permission envelopes, HITL checkpoints, boundary policies,
+resource budgets, and comprehensive audit trails.
+- **Design philosophy**: Declarative specifications define envelopes of 
+permitted runtime behavior (not static blueprints), pluggable agent kinds all 
+route through the same enforcement chokepoint, and six formal safety invariants 
+guarantee baseline trustworthiness regardless of what the LLM attempts.
+
+The briefing positions this paradigm as the agent-native analogue to service 
+mesh architectures in microservices—infrastructure-owned enforcement of 
+safety-critical constraints at the mesh boundary rather than relying on 
+application code to comply.
+───────────────────────────────── run summary ──────────────────────────────────
+{
+    'totals': {
+        'tool_calls': 15,
+        'llm_calls': 9,
+        'cost_usd': 0.0539,
+        'elapsed_sec': 24.27,
+        'sub_agents_spawned': {'coordinator': 1}
+    },
+    'audit_log': 
+'output/campaign/research_as
+sistant/run-004/audit.jsonl'
+}

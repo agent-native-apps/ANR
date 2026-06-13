@@ -1,0 +1,226 @@
+# Inbox-triage application specification.
+#
+# Structure: a triager surveys a fixture inbox, marks genuine urgencies,
+# spawns parallel extractors to pull structured action items from them,
+# and delegates reply drafts to a drafter. Unlike research_assistant,
+# this spec naturally fires the platform_initiated HITL pattern (§3.2.2
+# pattern 4) via a rate threshold on mark_urgent.
+#
+# Fully self-contained: fixture emails under ./data/inbox/, drafts
+# written to ./output/drafts/. No external systems.
+
+application:
+  name: inbox-triage
+  version: "0.1"
+  description: "Triager + parallel extractors + drafter; platform-initiated HITL when too many messages are marked urgent."
+  example_task: >-
+    Triage this morning's eight inbox messages (data/inbox/e001..e008).
+    Mark any production incidents urgent, extract action items in
+    parallel, and draft a single status reply to the on-call lead.
+
+# ---------------------------------------------------------------------------
+# Application structure
+# ---------------------------------------------------------------------------
+
+data_sources:
+  - name: inbox
+    kind: local_directory
+    path: ./data/inbox
+    description: "Fixture inbox of JSON emails; read-only."
+    content_type: application/json
+
+  - name: drafts
+    kind: local_directory
+    path: ./output/drafts
+    description: "Draft replies written by the drafter; write-only from that agent."
+    content_type: text/markdown
+
+tools:
+  # One MCP server exposes four local tools over stdio. Same pattern as
+  # research_assistant — production deployments would typically split
+  # filesystem and action tools across servers, but one keeps the demo
+  # tractable while still using real MCP transport.
+  - name: list_emails
+    kind: mcp
+    description: "List every email in the inbox with id, sender, subject, date."
+    remote_name: list_emails
+    binds_to: inbox
+    server: &inbox_server
+      command: python
+      args: ["-m", "mcp_servers.inbox_server"]
+
+  - name: read_email
+    kind: mcp
+    description: "Read the full body of one email by id (e.g. 'e001')."
+    remote_name: read_email
+    binds_to: inbox
+    server: *inbox_server
+
+  - name: mark_urgent
+    kind: mcp
+    description: "Flag an email as urgent so oncall surfaces it next. Records id, subject, reason to the audit stream."
+    remote_name: mark_urgent
+    binds_to: inbox
+    server: *inbox_server
+
+  - name: save_draft
+    kind: mcp
+    description: "Save a markdown draft reply to the drafts folder."
+    remote_name: save_draft
+    binds_to: drafts
+    server: *inbox_server
+
+agents:
+  - name: triager
+    model: anthropic/claude-haiku-4-5
+    role: entry_point
+    system_prompt_file: prompts/triager.md
+    # The triager cannot save_draft — only the drafter can, and every
+    # save is HITL-gated. This is the §3.1.2 permission envelope doing
+    # its job.
+    tools: [list_emails, read_email, mark_urgent]
+    may_delegate_to: [extractor, drafter]
+
+  - name: extractor
+    model: anthropic/claude-haiku-4-5
+    system_prompt_file: prompts/extractor.md
+    tools: [read_email]
+    may_delegate_to: []
+
+  - name: drafter
+    model: anthropic/claude-haiku-4-5
+    system_prompt_file: prompts/drafter.md
+    tools: [read_email, save_draft]
+    may_delegate_to: []
+
+# ---------------------------------------------------------------------------
+# Behavioral envelope
+# ---------------------------------------------------------------------------
+
+envelope:
+  autonomy:
+    triager:
+      max_sub_agents: 6
+      max_delegation_depth: 2
+      max_tool_calls: 30
+    extractor:
+      max_sub_agents: 0
+      max_delegation_depth: 0
+      max_tool_calls: 6
+    drafter:
+      max_sub_agents: 0
+      max_delegation_depth: 0
+      max_tool_calls: 8
+
+  resource_limits:
+    total_cost_usd: 1.00
+    total_runtime_sec: 240
+    total_llm_calls: 45
+
+  hitl_checkpoints:
+    # Pattern 1 — predefined deterministic (§3.2.2):
+    # Every draft saved to disk requires explicit approval. save_draft
+    # is the single outbound action in this application.
+    - id: approve_draft_save
+      pattern: predefined
+      when:
+        tool: save_draft
+      prompt: "Approve saving this draft reply to disk?"
+
+    # Pattern 2 — conditional deterministic (§3.2.2):
+    # Flagging a newsletter or digest email as urgent is almost always
+    # a misclassification — scrutinise the call.
+    - id: suspicious_urgency
+      pattern: conditional
+      when:
+        tool: mark_urgent
+      condition: "'newsletter' in args.subject or 'digest' in args.subject or 'unsubscribe' in args.subject"
+      prompt: "Agent is marking a newsletter/digest as urgent — confirm this is intentional."
+
+    # Pattern 3 — agent-initiated (§3.2.2):
+    # Any agent may call request_human_review(reason=...) to escalate
+    # an ambiguity it cannot resolve on its own.
+    - id: agent_requested_review
+      pattern: agent_initiated
+      allowed_for: [triager, extractor, drafter]
+      prompt: "Agent requested human review."
+
+    # Pattern 4 — platform-initiated (§3.2.2):
+    # Rate-threshold: if more than two emails are flagged urgent in a
+    # single run, the platform pauses and asks a human to confirm the
+    # triager has not miscalibrated. Fires at most once per run.
+    - id: urgency_rate_threshold
+      pattern: platform_initiated
+      trigger: "count_of('mark_urgent') >= 3"
+      prompt: "Triager has flagged 3+ emails urgent in this run — verify before continuing."
+
+  # ---- Graph reshape (R1, R2, R4) ----
+  graph_reshape:
+    allowed: true
+    permitted_changes:
+      # R1 — triager may spawn up to three concurrent extractor
+      # instances, each on a separate urgent email id.
+      - kind: spawn_instance
+        of_agent: extractor
+        max_concurrent: 3
+        for_callers: [triager]
+
+      # R2 — drafter may acquire mark_urgent at runtime if, while
+      # drafting a reply, it concludes the original email is more
+      # urgent than the triager assessed. HITL + reason mandatory.
+      - kind: acquire_capability
+        capability_kind: tool
+        capability_name: mark_urgent
+        for_callers: [drafter]
+        requires_hitl: true
+        reason_required: true
+
+      # R4 — triager may instantiate a domain_expert template to
+      # classify a genuinely borderline email. Mandatory HITL always
+      # fires on R4 regardless of this rule.
+      - kind: instantiate_template
+        template: domain_expert
+        max_total: 3
+        for_callers: [triager]
+
+# ---------------------------------------------------------------------------
+# Agent templates — blueprints for agents instantiated at runtime (R4)
+# ---------------------------------------------------------------------------
+
+agent_templates:
+  - name: domain_expert
+    model: anthropic/claude-haiku-4-5
+    description: "A domain-specialised classifier for borderline emails (e.g. security, legal, compliance)."
+    parameters: [domain]
+    system_prompt_template: |
+      You are a single-purpose classifier specialising in the {domain}
+      domain. The triager will hand you one email id and expects a
+      short structured verdict it can act on.
+
+      Process:
+      1. Call `read_email(id)` once.
+      2. Return a short structured summary:
+          - urgency: one of [critical, high, medium, low, spam]
+          - reasoning: one sentence grounded in the email body
+          - recommended_action: one of
+            [mark_urgent, draft_reply, escalate_to_human, no_action]
+
+      Do not call any tool other than `read_email`. Do not delegate.
+      You are a terminal node.
+    tools: [read_email]
+    may_delegate_to: []
+
+# ---------------------------------------------------------------------------
+# Orchestrator (§3.2.1 hybrid)
+# ---------------------------------------------------------------------------
+
+orchestrator:
+  kind: hybrid
+  # Deterministic routes let the caller target a specific sub-agent
+  # without going through the triager's reasoning layer.
+  deterministic_routes:
+    - input_regex: "^extract:"
+      route_to: extractor
+    - input_regex: "^draft:"
+      route_to: drafter
+  default_entry: triager

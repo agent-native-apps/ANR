@@ -1,0 +1,8 @@
+{
+  "id": "e004",
+  "from": "jane.smith@acme.co",
+  "to": "support@example.com",
+  "date": "2026-04-14T18:44:00Z",
+  "subject": "Request for refund on invoice INV-8821",
+  "body": "Hi — we were double-charged on invoice INV-8821 (March billing cycle). Could you please issue a refund for the duplicate charge of $1,240? Happy to provide the bank statement or any other evidence you need. Thanks, Jane Smith, AP, Acme Co."
+}

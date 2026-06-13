@@ -1,0 +1,9 @@
+{
+  "site": "metro_overpass",
+  "kind": "structural",
+  "captured_at": "07:18",
+  "drone_pass": "DR-9",
+  "summary": "Spalling localized to supports 14-17 south face; exposed reinforcing bar shows no visible corrosion or section loss. Deck deflection within tolerance. Adjacent supports 12-13 and 18-19 show no abnormalities.",
+  "confidence": 0.89,
+  "recommendation": "Engineering review required before service restoration; no immediate collapse risk."
+}

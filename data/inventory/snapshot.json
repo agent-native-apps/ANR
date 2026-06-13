@@ -1,0 +1,30 @@
+{
+  "controller_board_v3": {
+    "on_hand_units": 4200,
+    "reorder_threshold": 6000,
+    "weeks_of_cover": 2.1,
+    "warehouse": "central",
+    "note": "Below reorder threshold. Production team has flagged a potential line stoppage in 3 weeks if not replenished."
+  },
+  "lithium_cell_18650": {
+    "on_hand_units": 84000,
+    "reorder_threshold": 60000,
+    "weeks_of_cover": 9.4,
+    "warehouse": "central",
+    "note": "Above reorder threshold; routine reorder cadence."
+  },
+  "harness_assembly_a": {
+    "on_hand_units": 2800,
+    "reorder_threshold": 4000,
+    "weeks_of_cover": 3.0,
+    "warehouse": "east",
+    "note": "Slightly below threshold. Lead-time extension at primary supplier (Arc) is the binding constraint."
+  },
+  "thermal_paste_xt": {
+    "on_hand_units": 1200,
+    "reorder_threshold": 800,
+    "weeks_of_cover": 14.0,
+    "warehouse": "central",
+    "note": "Comfortable cover; no near-term action required."
+  }
+}

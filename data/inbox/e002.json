@@ -1,0 +1,8 @@
+{
+  "id": "e002",
+  "from": "newsletter@techdigest.dev",
+  "to": "you@example.com",
+  "date": "2026-04-14T09:00:00Z",
+  "subject": "Your Monday digest: 12 engineering links to start the week",
+  "body": "This week in engineering: a new LLVM release, Rust 1.80 stabilises async closures, a deep dive on io_uring, and more. Unsubscribe at the footer."
+}

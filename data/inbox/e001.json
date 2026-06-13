@@ -1,0 +1,8 @@
+{
+  "id": "e001",
+  "from": "oncall-alerts@prod.internal",
+  "to": "you@example.com",
+  "date": "2026-04-15T03:14:00Z",
+  "subject": "[SEV-1] api.prod returning 500s on /payments",
+  "body": "PagerDuty fired at 03:12 UTC. /payments on api.prod is 100% 500. Database connection pool appears saturated. On-call escalation chain: @alex, @priya, @ops-lead. Runbook: docs.internal/runbooks/payments-db. This is customer-facing and losing revenue right now. Please ack in #incident-247 within 5 minutes."
+}

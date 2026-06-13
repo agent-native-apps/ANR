@@ -1,0 +1,9 @@
+{
+  "site": "riverside_tower",
+  "kind": "structural",
+  "captured_at": "06:47",
+  "drone_pass": "DR-7",
+  "summary": "East face cladding loss confirmed floors 6-9. Two visible diagonal cracks in south stairwell concrete shear wall, widths 8mm and 14mm. North stairwell vertical alignment within tolerance. No visible deformation in primary load columns.",
+  "confidence": 0.78,
+  "recommendation": "Rescue ops above floor 5 should use north stairwell only; south stairwell unsafe."
+}

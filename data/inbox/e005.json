@@ -1,0 +1,8 @@
+{
+  "id": "e005",
+  "from": "calendar-noreply@corp.example.com",
+  "to": "you@example.com",
+  "date": "2026-04-14T15:00:00Z",
+  "subject": "Invitation: Weekly 1:1 with Priya — Thu Apr 17 10:00",
+  "body": "Priya has invited you to a recurring event. Weekly 1:1 with Priya. Thu 10:00-10:30 PT. Zoom link in calendar body. RSVP through your calendar client."
+}
