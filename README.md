@@ -10,12 +10,31 @@ production.
 
 ## What you'll see
 
-You hand the system a plain-English task. It compiles a YAML spec into a tree
-of agents that delegate to each other, call tools through a single
-policy-enforcing **mesh**, and pause for your approval at human-in-the-loop
-(HITL) checkpoints. Every step — each tool call, delegation, boundary
-decision, and graph reshape — is written to an audit log you can replay
-step-by-step in the browser visualizer.
+ANR runs scenario tasks against YAML application specifications. Each spec
+instantiates an agent graph whose agents delegate to each other, call tools
+through a single policy-enforcing agent mesh, and pause for approval at
+human-in-the-loop (HITL) checkpoints. Every step — each tool call, delegation,
+boundary decision, and graph reshape — is written to an audit log that can be
+replayed step-by-step in the browser visualizer.
+
+## Paper companion map
+
+The paper's **Companion Prototype: ANR** section is represented here by the
+runtime, the YAML application specifications, and the committed campaign
+logs. The table below maps the main ANR concepts and reported artifacts from
+the paper to the corresponding repo artifacts:
+
+| Paper concept or artifact | Where to inspect it |
+|---|---|
+| Declarative application specification and behavioral envelope | [`specs/research_assistant.yaml`](specs/research_assistant.yaml) for the compact baseline; [`specs/README.md`](specs/README.md) for a field-by-field guide |
+| Emergency first-response use case (§6.1) | [`specs/emergency_response.yaml`](specs/emergency_response.yaml) |
+| Cross-organizational supply-chain use case (§6.2) | [`specs/supply_chain.yaml`](specs/supply_chain.yaml) |
+| Campaign measurements in the ANR table | [`artifacts/campaign/`](artifacts/campaign/README.md), with 25 calibrated and 25 fault-injected runs for each reported scenario |
+| Extra HITL demonstration not reported in the paper table | [`specs/inbox_triage.yaml`](specs/inbox_triage.yaml) |
+
+The reported scenarios are `research_assistant`, `emergency_response`, and
+`supply_chain`. `inbox_triage` is included as an additional runnable example,
+but it is not part of the paper's campaign measurements.
 
 ## Quickstart
 
@@ -47,12 +66,12 @@ own as a final quoted argument.
 
 ## Run a demo
 
-Four application specs ship under `specs/`. For a reviewer-oriented guide to
-how the YAML fields map to the paper's graph, envelope, HITL, boundary, and
-reshape concepts, see [`specs/README.md`](specs/README.md). Each command below
-is copy-paste-ready — fixture data is already in `data/`. The trailing task is
-optional (each spec carries the same one as its `example_task`); it's shown
-here so you can see and tweak it.
+Four application specs ship under `specs/`. For a guide to how the YAML fields
+map to the paper's graph, envelope, HITL, boundary, and reshape concepts, see
+[`specs/README.md`](specs/README.md). Each command below is copy-paste-ready —
+fixture data is already in `data/`. The trailing task is optional (each spec
+carries the same one as its `example_task`); it's shown here so you can see and
+tweak it.
 
 ### `research_assistant` — introductory delegation demo
 
@@ -174,14 +193,28 @@ uv run anr-viz specs/research_assistant.yaml ./output/ra/audit.jsonl --port 8091
 ## Paper measurement data and campaigns
 
 The audit logs behind the paper's campaign runs are committed under
-[`artifacts/campaign/`](artifacts/campaign/README.md) — 25 unattended runs
-per scenario per condition (calibrated and fault-injected) for the three
-reported scenarios, 150 runs total. Its README explains the layout and how
-to read the audit records. Any committed run can be replayed step-by-step in
-the visualizer:
+[`artifacts/campaign/`](artifacts/campaign/README.md). For each reported
+scenario, there are 25 calibrated runs using the spec as declared and 25
+fault-injected runs in which every agent sees all declared tool schemas while
+mesh-side authority remains scoped. That gives 50 runs per scenario and 150
+runs total across `research_assistant`, `emergency_response`, and
+`supply_chain`.
+
+The calibrated directories are named after the scenario
+(`research_assistant/`, `emergency_response/`, `supply_chain/`). The
+fault-injected directories add `_expose_all/`. In each directory,
+`manifest.jsonl` is a one-line-per-run index, while each
+`run-NNN/audit.jsonl` is the complete audit log used to compute the table
+counts. Any committed run can be replayed step-by-step in the visualizer:
 
 ```bash
 uv run anr-viz specs/supply_chain.yaml artifacts/campaign/supply_chain/run-001/audit.jsonl
+```
+
+To recompute a compact table-style summary from the committed logs:
+
+```bash
+uv run python scripts/summarize_campaign.py
 ```
 
 To run fresh campaigns instead: each run is an isolated process writing its
@@ -218,10 +251,11 @@ src/
   anr/              runtime: spec, compiler, mesh, policies, agents, MCP client, CLI
   anr_viz/          FastAPI + HTMX live visualizer (tails output/audit.jsonl)
   mcp_servers/      FastMCP tool servers (tools / inbox / incident / procurement)
-specs/              application specs, reviewer guide, supply_chain_agents.py, prompts/
+specs/              application specs, spec guide, supply_chain_agents.py, prompts/
 data/               read-only fixtures (knowledge_base / inbox / incidents / suppliers / inventory)
 examples/audits/    canned audit logs for visualizer replay without live LLM calls
 artifacts/campaign/ committed audit logs behind the paper's campaign runs (150 runs)
 output/             runtime writes here: audit.jsonl, hitl/, notes/, sitreps/, campaign/, …
-scripts/            campaign.py, sanitize_artifact_paths.py, lock.sh, auto_approve.py
+scripts/            campaign.py, sanitize_artifact_paths.py, auto_approve.py,
+                    summarize_campaign.py
 ```

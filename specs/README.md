@@ -5,7 +5,7 @@ declarative application specification. They are meant to be read in two ways:
 as runnable demos for ANR, and as concrete examples of the paper's behavioral
 envelope idea.
 
-## Reviewer Path
+## Suggested Path
 
 Start with the shortest working example, then inspect the two paper use cases:
 
@@ -134,3 +134,5 @@ The unattended runs behind the paper's campaign measurements live under
 [`../artifacts/campaign/`](../artifacts/campaign/). Their logs are sanitized
 with [`../scripts/sanitize_artifact_paths.py`](../scripts/sanitize_artifact_paths.py)
 so local absolute checkout paths are replaced by repo-relative paths.
+Use [`../scripts/summarize_campaign.py`](../scripts/summarize_campaign.py) to
+recompute a compact table-style summary from those committed audit logs.
