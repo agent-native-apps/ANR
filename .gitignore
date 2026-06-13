@@ -16,5 +16,8 @@ build/
 .coverage
 htmlcov/
 
-# Internal/scratch documentation and diagrams are excluded from the initial release.
-docs/
+# Public schema docs are included; architecture notes and rendered diagrams
+# under docs/ remain local/internal for now.
+docs/*
+!docs/schema/
+!docs/schema/**

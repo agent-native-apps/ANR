@@ -1,0 +1,906 @@
+{
+  "$defs": {
+    "AcquireCapabilityChange": {
+      "description": "R2/R3: permission for an agent to acquire a tool or delegation target at runtime.",
+      "properties": {
+        "kind": {
+          "const": "acquire_capability",
+          "title": "Kind",
+          "type": "string"
+        },
+        "capability_kind": {
+          "enum": [
+            "tool",
+            "delegation_target"
+          ],
+          "title": "Capability Kind",
+          "type": "string"
+        },
+        "capability_name": {
+          "title": "Capability Name",
+          "type": "string"
+        },
+        "for_callers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "For Callers",
+          "type": "array"
+        },
+        "requires_hitl": {
+          "default": true,
+          "title": "Requires Hitl",
+          "type": "boolean"
+        },
+        "reason_required": {
+          "default": true,
+          "title": "Reason Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "capability_kind",
+        "capability_name"
+      ],
+      "title": "AcquireCapabilityChange",
+      "type": "object"
+    },
+    "Agent": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "kind": {
+          "default": "native",
+          "enum": [
+            "native",
+            "script"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "role": {
+          "default": "worker",
+          "enum": [
+            "entry_point",
+            "worker"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "system_prompt_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "System Prompt File"
+        },
+        "script_entry": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Script Entry"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "may_delegate_to": {
+          "items": {
+            "type": "string"
+          },
+          "title": "May Delegate To",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "Agent",
+      "type": "object"
+    },
+    "AgentTemplate": {
+      "description": "A blueprint for a runtime-instantiated agent (R4 graph reshape).\n\nTemplates are pre-declared at spec time; their `system_prompt_template`\ncontains named `{placeholder}` markers that are bound to caller-provided\nvalues at instantiation. The set of permitted parameter names is closed\nby the `parameters` list, so the caller cannot inject arbitrary keys.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "system_prompt_template": {
+          "title": "System Prompt Template",
+          "type": "string"
+        },
+        "parameters": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Parameters",
+          "type": "array"
+        },
+        "tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "may_delegate_to": {
+          "items": {
+            "type": "string"
+          },
+          "title": "May Delegate To",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "model",
+        "system_prompt_template"
+      ],
+      "title": "AgentTemplate",
+      "type": "object"
+    },
+    "ApplicationMeta": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "default": "0.1",
+          "title": "Version",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "example_task": {
+          "default": "",
+          "title": "Example Task",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "ApplicationMeta",
+      "type": "object"
+    },
+    "AutonomyLimits": {
+      "properties": {
+        "max_sub_agents": {
+          "default": 0,
+          "title": "Max Sub Agents",
+          "type": "integer"
+        },
+        "max_delegation_depth": {
+          "default": 1,
+          "title": "Max Delegation Depth",
+          "type": "integer"
+        },
+        "max_tool_calls": {
+          "default": 20,
+          "title": "Max Tool Calls",
+          "type": "integer"
+        }
+      },
+      "title": "AutonomyLimits",
+      "type": "object"
+    },
+    "BoundaryPolicy": {
+      "description": "Mesh policy for messages crossing the application boundary.\n\nThis is a compact prototype of the paper's ingress/egress boundary\nenforcement role. A policy attaches to one tool and inspects one string\nargument and/or the caller's data-access context. Pattern or context\nmatches trigger one of the mesh's four outcomes: allow, block, sanitize,\nor escalate_to_human.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "direction": {
+          "enum": [
+            "ingress",
+            "egress"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "content_arg": {
+          "default": "message",
+          "title": "Content Arg",
+          "type": "string"
+        },
+        "match": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Match",
+          "type": "array"
+        },
+        "data_sensitivity_at_least": {
+          "anyOf": [
+            {
+              "enum": [
+                "public",
+                "internal",
+                "confidential",
+                "restricted"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Data Sensitivity At Least"
+        },
+        "accessed_data_tags_any": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Accessed Data Tags Any",
+          "type": "array"
+        },
+        "action": {
+          "default": "block",
+          "enum": [
+            "allow",
+            "block",
+            "sanitize",
+            "escalate_to_human"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "replacement": {
+          "default": "[REDACTED]",
+          "title": "Replacement",
+          "type": "string"
+        },
+        "prompt": {
+          "default": "Boundary policy matched. Approve this exchange?",
+          "title": "Prompt",
+          "type": "string"
+        },
+        "message": {
+          "default": "boundary policy matched",
+          "title": "Message",
+          "type": "string"
+        },
+        "for_callers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "For Callers",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "direction",
+        "tool"
+      ],
+      "title": "BoundaryPolicy",
+      "type": "object"
+    },
+    "DataSource": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "local_directory",
+            "http"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "allowed_domains": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Domains",
+          "type": "array"
+        },
+        "content_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Type"
+        },
+        "sensitivity": {
+          "default": "internal",
+          "enum": [
+            "public",
+            "internal",
+            "confidential",
+            "restricted"
+          ],
+          "title": "Sensitivity",
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "title": "DataSource",
+      "type": "object"
+    },
+    "DeterministicRoute": {
+      "properties": {
+        "input_regex": {
+          "title": "Input Regex",
+          "type": "string"
+        },
+        "route_to": {
+          "title": "Route To",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input_regex",
+        "route_to"
+      ],
+      "title": "DeterministicRoute",
+      "type": "object"
+    },
+    "Envelope": {
+      "properties": {
+        "autonomy": {
+          "additionalProperties": {
+            "$ref": "#/$defs/AutonomyLimits"
+          },
+          "title": "Autonomy",
+          "type": "object"
+        },
+        "resource_limits": {
+          "$ref": "#/$defs/ResourceLimits"
+        },
+        "hitl_checkpoints": {
+          "items": {
+            "$ref": "#/$defs/HITLCheckpoint"
+          },
+          "title": "Hitl Checkpoints",
+          "type": "array"
+        },
+        "boundary_policies": {
+          "items": {
+            "$ref": "#/$defs/BoundaryPolicy"
+          },
+          "title": "Boundary Policies",
+          "type": "array"
+        },
+        "graph_reshape": {
+          "$ref": "#/$defs/GraphReshape"
+        }
+      },
+      "title": "Envelope",
+      "type": "object"
+    },
+    "GraphReshape": {
+      "properties": {
+        "allowed": {
+          "default": true,
+          "title": "Allowed",
+          "type": "boolean"
+        },
+        "constraint": {
+          "default": "orchestrator may enact any change listed in permitted_changes, subject to per-rule HITL and per-rule limits",
+          "title": "Constraint",
+          "type": "string"
+        },
+        "permitted_changes": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "acquire_capability": "#/$defs/AcquireCapabilityChange",
+                "instantiate_template": "#/$defs/InstantiateTemplateChange",
+                "spawn_instance": "#/$defs/SpawnInstanceChange"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/SpawnInstanceChange"
+              },
+              {
+                "$ref": "#/$defs/AcquireCapabilityChange"
+              },
+              {
+                "$ref": "#/$defs/InstantiateTemplateChange"
+              }
+            ]
+          },
+          "title": "Permitted Changes",
+          "type": "array"
+        }
+      },
+      "title": "GraphReshape",
+      "type": "object"
+    },
+    "HITLCheckpoint": {
+      "description": "One HITL checkpoint. The four \u00a73.2.2 patterns are distinguished by 'pattern'.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "pattern": {
+          "enum": [
+            "predefined",
+            "conditional",
+            "agent_initiated",
+            "platform_initiated"
+          ],
+          "title": "Pattern",
+          "type": "string"
+        },
+        "prompt": {
+          "default": "Approve this action?",
+          "title": "Prompt",
+          "type": "string"
+        },
+        "when": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HITLWhen"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "condition": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Condition"
+        },
+        "trigger": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trigger"
+        },
+        "allowed_for": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed For",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "pattern"
+      ],
+      "title": "HITLCheckpoint",
+      "type": "object"
+    },
+    "HITLWhen": {
+      "properties": {
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool"
+        },
+        "caller": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Caller"
+        }
+      },
+      "title": "HITLWhen",
+      "type": "object"
+    },
+    "InstantiateTemplateChange": {
+      "description": "R4: permission to instantiate a templated agent at runtime.\n\nThe mesh ALWAYS fires HITL on this kind regardless of the rule \u2014 the\nrisk surface (LLM-controlled prompt construction within a closed\nparameter set) makes mandatory human approval the right default. This\nis intentionally not configurable in the YAML.",
+      "properties": {
+        "kind": {
+          "const": "instantiate_template",
+          "title": "Kind",
+          "type": "string"
+        },
+        "template": {
+          "title": "Template",
+          "type": "string"
+        },
+        "max_total": {
+          "default": 5,
+          "title": "Max Total",
+          "type": "integer"
+        },
+        "for_callers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "For Callers",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "template"
+      ],
+      "title": "InstantiateTemplateChange",
+      "type": "object"
+    },
+    "MCPServerConfig": {
+      "properties": {
+        "command": {
+          "title": "Command",
+          "type": "string"
+        },
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Args",
+          "type": "array"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Env",
+          "type": "object"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "title": "MCPServerConfig",
+      "type": "object"
+    },
+    "Orchestrator": {
+      "properties": {
+        "kind": {
+          "default": "hybrid",
+          "enum": [
+            "hybrid",
+            "deterministic",
+            "agentic"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "deterministic_routes": {
+          "items": {
+            "$ref": "#/$defs/DeterministicRoute"
+          },
+          "title": "Deterministic Routes",
+          "type": "array"
+        },
+        "default_entry": {
+          "title": "Default Entry",
+          "type": "string"
+        }
+      },
+      "required": [
+        "default_entry"
+      ],
+      "title": "Orchestrator",
+      "type": "object"
+    },
+    "ResourceLimits": {
+      "properties": {
+        "total_cost_usd": {
+          "default": 1.0,
+          "title": "Total Cost Usd",
+          "type": "number"
+        },
+        "total_runtime_sec": {
+          "default": 120,
+          "title": "Total Runtime Sec",
+          "type": "integer"
+        },
+        "total_llm_calls": {
+          "default": 40,
+          "title": "Total Llm Calls",
+          "type": "integer"
+        }
+      },
+      "title": "ResourceLimits",
+      "type": "object"
+    },
+    "SpawnInstanceChange": {
+      "description": "R1: permission to spawn additional concurrent instances of a declared agent.",
+      "properties": {
+        "kind": {
+          "const": "spawn_instance",
+          "title": "Kind",
+          "type": "string"
+        },
+        "of_agent": {
+          "title": "Of Agent",
+          "type": "string"
+        },
+        "max_concurrent": {
+          "default": 3,
+          "title": "Max Concurrent",
+          "type": "integer"
+        },
+        "for_callers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "For Callers",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "of_agent"
+      ],
+      "title": "SpawnInstanceChange",
+      "type": "object"
+    },
+    "Tool": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "mcp",
+            "http",
+            "builtin"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "boundary": {
+          "default": "internal",
+          "enum": [
+            "internal",
+            "ingress",
+            "egress"
+          ],
+          "title": "Boundary",
+          "type": "string"
+        },
+        "server": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MCPServerConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "remote_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Remote Name"
+        },
+        "binds_to": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Binds To"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "method": {
+          "default": "GET",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "DELETE",
+            "PATCH"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "input_schema": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Schema"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ],
+      "title": "Tool",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "spec_version": {
+      "default": "0.1",
+      "title": "Spec Version",
+      "type": "string"
+    },
+    "application": {
+      "$ref": "#/$defs/ApplicationMeta"
+    },
+    "data_sources": {
+      "items": {
+        "$ref": "#/$defs/DataSource"
+      },
+      "title": "Data Sources",
+      "type": "array"
+    },
+    "tools": {
+      "items": {
+        "$ref": "#/$defs/Tool"
+      },
+      "title": "Tools",
+      "type": "array"
+    },
+    "agents": {
+      "items": {
+        "$ref": "#/$defs/Agent"
+      },
+      "title": "Agents",
+      "type": "array"
+    },
+    "agent_templates": {
+      "items": {
+        "$ref": "#/$defs/AgentTemplate"
+      },
+      "title": "Agent Templates",
+      "type": "array"
+    },
+    "envelope": {
+      "$ref": "#/$defs/Envelope"
+    },
+    "orchestrator": {
+      "$ref": "#/$defs/Orchestrator"
+    }
+  },
+  "required": [
+    "application",
+    "agents",
+    "orchestrator"
+  ],
+  "title": "Agent-Native Application Specification",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Portable declarative contract for an agent-native application. Any conforming runtime consumes a YAML/JSON document that validates against this schema.",
+  "x-supported-spec-versions": [
+    "0.1"
+  ]
+}

@@ -8,7 +8,7 @@ policy-enforcing **mesh**, while a lightweight orchestrator provides the
 control-plane hooks for bounded graph evolution. Proof-of-concept, not
 production.
 
-## What you'll see
+## Overview
 
 ANR runs scenario tasks against YAML application specifications. Each spec
 instantiates an agent graph whose agents delegate to each other, call tools
@@ -27,6 +27,7 @@ the paper to the corresponding repo artifacts:
 | Paper concept or artifact | Where to inspect it |
 |---|---|
 | Declarative application specification and behavioral envelope | [`specs/research_assistant.yaml`](specs/research_assistant.yaml) for the compact baseline; [`specs/README.md`](specs/README.md) for a field-by-field guide |
+| Portable JSON Schema for the specification | [`docs/schema/anr-spec-v0.json`](docs/schema/anr-spec-v0.json) |
 | Emergency first-response use case (§6.1) | [`specs/emergency_response.yaml`](specs/emergency_response.yaml) |
 | Cross-organizational supply-chain use case (§6.2) | [`specs/supply_chain.yaml`](specs/supply_chain.yaml) |
 | Campaign measurements in the ANR table | [`artifacts/campaign/`](artifacts/campaign/README.md), with 25 calibrated and 25 fault-injected runs for each reported scenario |
@@ -252,6 +253,7 @@ src/
   anr_viz/          FastAPI + HTMX live visualizer (tails output/audit.jsonl)
   mcp_servers/      FastMCP tool servers (tools / inbox / incident / procurement)
 specs/              application specs, spec guide, supply_chain_agents.py, prompts/
+docs/schema/        portable JSON Schema for the application specification
 data/               read-only fixtures (knowledge_base / inbox / incidents / suppliers / inventory)
 examples/audits/    canned audit logs for visualizer replay without live LLM calls
 artifacts/campaign/ committed audit logs behind the paper's campaign runs (150 runs)
