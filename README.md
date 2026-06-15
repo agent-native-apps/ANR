@@ -37,6 +37,10 @@ The reported scenarios are `research_assistant`, `emergency_response`, and
 `supply_chain`. `inbox_triage` is included as an additional runnable example,
 but it is not part of the paper's campaign measurements.
 
+## Frontend Demo (Emergency First Response Use Case)
+
+https://github.com/user-attachments/assets/6af67f2f-0689-46c3-a161-c1f86efb3c73
+
 ## Quickstart
 
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
